@@ -7,7 +7,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
-    Form, Json,
+    Json,
 };
 use base64::{
     engine::general_purpose::STANDARD as B64, engine::general_purpose::URL_SAFE_NO_PAD as B64URL,
@@ -20,7 +20,7 @@ use uuid::Uuid;
 use less_accounts_auth::es256::{jwk_thumbprint, Jwks};
 use less_accounts_auth::jwt::{OAuthAccessClaims, OAuthStateClaims};
 use less_accounts_core::{
-    identity::{compute_did_key, personal_space_id},
+    identity::{compute_did_key, format_handle, personal_space_id},
     protocol::*,
 };
 use less_accounts_storage::{
@@ -28,6 +28,7 @@ use less_accounts_storage::{
     OAuthGrantStorage, OAuthRefreshToken, OAuthRefreshTokenStorage, OAuthSigningKeyStorage,
     RateLimitStorage, StorageError,
 };
+use subtle::ConstantTimeEq as _;
 
 use crate::{
     error::ApiError,
@@ -90,7 +91,17 @@ pub async fn handle_oauth_authorize(
         return oauth_error_redirect(None, None, "invalid_request", "invalid redirect_uri");
     }
 
-    let client_state = q.state.clone().unwrap_or_default();
+    let client_state = match q.state.clone() {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            return oauth_error_redirect(
+                Some(&redirect_uri),
+                None,
+                "invalid_request",
+                "state parameter required",
+            )
+        }
+    };
 
     // Validate response_type = code
     if q.response_type.as_deref() != Some("code") {
@@ -124,7 +135,17 @@ pub async fn handle_oauth_authorize(
         }
     };
 
-    let scope = q.scope.as_deref().unwrap_or("openid");
+    let scope = match q.scope.as_deref() {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            return oauth_error_redirect(
+                Some(&redirect_uri),
+                Some(&client_state),
+                "invalid_request",
+                "scope parameter required",
+            )
+        }
+    };
 
     // Validate scopes
     if let Err(msg) = validate_scopes_against_client(scope, &client) {
@@ -408,12 +429,15 @@ pub struct TokenForm {
     pub client_id: String,
     #[serde(default)]
     pub refresh_token: String,
+    /// Extended PKCE thumbprint (only for sync/files scopes)
+    #[serde(default)]
+    pub keys_jwk_thumbprint: String,
 }
 
 /// POST /oauth/token
 pub async fn handle_oauth_token(
     State(state): State<AppState>,
-    Form(req): Form<TokenForm>,
+    Json(req): Json<TokenForm>,
 ) -> Response {
     match req.grant_type.as_str() {
         "authorization_code" => handle_authorization_code_grant(&state, req).await,
@@ -439,13 +463,24 @@ async fn handle_authorization_code_grant(state: &AppState, req: TokenForm) -> Re
     };
 
     if req.code.is_empty() {
-        return write_oauth_error(StatusCode::BAD_REQUEST, "invalid_request", "missing code");
+        return write_oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "code is required",
+        );
+    }
+    if req.redirect_uri.is_empty() {
+        return write_oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "redirect_uri is required",
+        );
     }
     if req.code_verifier.is_empty() {
         return write_oauth_error(
             StatusCode::BAD_REQUEST,
             "invalid_request",
-            "missing code_verifier",
+            "code_verifier is required (PKCE)",
         );
     }
 
@@ -470,7 +505,7 @@ async fn handle_authorization_code_grant(state: &AppState, req: TokenForm) -> Re
             "client_id mismatch",
         );
     }
-    if !req.redirect_uri.is_empty() && code.redirect_uri != req.redirect_uri {
+    if code.redirect_uri != req.redirect_uri {
         return write_oauth_error(
             StatusCode::BAD_REQUEST,
             "invalid_grant",
@@ -480,6 +515,21 @@ async fn handle_authorization_code_grant(state: &AppState, req: TokenForm) -> Re
 
     // Verify PKCE
     let pkce_ok = if let Some(ref thumbprint) = code.keys_jwk_thumbprint {
+        // Extended PKCE: require keys_jwk_thumbprint in request and validate it matches
+        if req.keys_jwk_thumbprint.is_empty() {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "keys_jwk_thumbprint required",
+            );
+        }
+        if req.keys_jwk_thumbprint != *thumbprint {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "keys_jwk_thumbprint mismatch",
+            );
+        }
         verify_pkce_with_thumbprint(&req.code_verifier, thumbprint, &code.code_challenge)
     } else {
         verify_pkce(&req.code_verifier, &code.code_challenge)
@@ -514,6 +564,12 @@ async fn handle_authorization_code_grant(state: &AppState, req: TokenForm) -> Re
         Err(e) => return ApiError::from(e).into_response(),
     };
 
+    // Fetch account for handle in response
+    let account = match state.storage.get_account_by_id(grant.account_id).await {
+        Ok(a) => a,
+        Err(e) => return ApiError::from(e).into_response(),
+    };
+
     // Issue access token
     let access_token = match issue_access_token(state, &grant, &code.scope).await {
         Ok(t) => t,
@@ -528,6 +584,7 @@ async fn handle_authorization_code_grant(state: &AppState, req: TokenForm) -> Re
 
     let _ = state.storage.update_grant_last_used(grant.id).await;
 
+    let handle = format_handle(&account.username, &state.config.identity_domain);
     let response = OAuthTokenResponse {
         access_token,
         token_type: "Bearer".to_string(),
@@ -535,6 +592,7 @@ async fn handle_authorization_code_grant(state: &AppState, req: TokenForm) -> Re
         refresh_token: raw_refresh,
         scope: code.scope,
         keys_jwe: code.keys_jwe, // only returned on first exchange
+        handle,
     };
 
     (StatusCode::OK, Json(response)).into_response()
@@ -576,6 +634,12 @@ async fn handle_refresh_token_grant(state: &AppState, req: TokenForm) -> Respons
 
     let grant = match state.storage.get_oauth_grant(old_token.grant_id).await {
         Ok(g) => g,
+        Err(e) => return ApiError::from(e).into_response(),
+    };
+
+    // Fetch account for handle in response
+    let account = match state.storage.get_account_by_id(grant.account_id).await {
+        Ok(a) => a,
         Err(e) => return ApiError::from(e).into_response(),
     };
 
@@ -624,6 +688,7 @@ async fn handle_refresh_token_grant(state: &AppState, req: TokenForm) -> Respons
 
     let _ = state.storage.update_grant_last_used(grant.id).await;
 
+    let handle = format_handle(&account.username, &state.config.identity_domain);
     let response = OAuthTokenResponse {
         access_token,
         token_type: "Bearer".to_string(),
@@ -631,6 +696,7 @@ async fn handle_refresh_token_grant(state: &AppState, req: TokenForm) -> Respons
         refresh_token: new_raw,
         scope: grant.scope,
         keys_jwe: None, // not returned on refresh
+        handle,
     };
 
     (StatusCode::OK, Json(response)).into_response()
@@ -648,27 +714,35 @@ pub async fn handle_oauth_userinfo(
     let account_id =
         Uuid::parse_str(&claims.sub).map_err(|_| ApiError::unauthorized("invalid token"))?;
 
-    let account = state.storage.get_account_by_id(account_id).await?;
-
     let scopes: Vec<&str> = claims.scope.split_whitespace().collect();
 
+    // openid scope is required for this endpoint
+    if !scopes.contains(&"openid") {
+        return Err(ApiError::forbidden("openid scope required"));
+    }
+
+    let account = state.storage.get_account_by_id(account_id).await?;
+
     let preferred_username = if scopes.contains(&"profile") {
-        Some(account.username.clone())
+        Some(format_handle(
+            &account.username,
+            &state.config.identity_domain,
+        ))
     } else {
         None
     };
 
-    let (email, name) = if scopes.contains(&"email") {
-        (Some(account.email.clone()), Some(account.username.clone()))
+    let (email, email_verified) = if scopes.contains(&"email") {
+        (Some(account.email.clone()), Some(true))
     } else {
         (None, None)
     };
 
     Ok(Json(OAuthUserInfoResponse {
         sub: claims.sub,
-        email,
-        name,
         preferred_username,
+        email,
+        email_verified,
     }))
 }
 
@@ -768,8 +842,8 @@ pub async fn handle_grant_keypair(
         })?;
 
     Ok(Json(GrantKeypairResponse {
-        app_public_key: grant.app_public_key,
         app_keypair_blob: grant.app_keypair_blob,
+        wrapped_scoped_key: grant.wrapped_scoped_key.map(|k| B64.encode(&k)),
     }))
 }
 
@@ -812,14 +886,20 @@ pub async fn handle_user_public_key(
             _ => ApiError::from(e),
         })?;
 
-    let app_public_key = grant
+    let public_key = grant
         .app_public_key
         .ok_or_else(|| ApiError::not_found("not found"))?;
-    let thumbprint = grant.keys_jwk_thumbprint.unwrap_or_default();
+
+    let did = compute_did_key(&public_key).map_err(|_| ApiError::not_found("not found"))?;
 
     Ok(Json(UserPublicKeyResponse {
-        keys_jwk_thumbprint: thumbprint,
-        app_public_key,
+        handle: format_handle(&account.username, &state.config.identity_domain),
+        client_id: client_id_str,
+        public_key,
+        did,
+        issuer: state.config.issuer.clone(),
+        user_id: account.id.to_string(),
+        mailbox_id: grant.mailbox_id.unwrap_or_default(),
     }))
 }
 
@@ -845,15 +925,17 @@ pub async fn handle_user_by_thumbprint(
             _ => ApiError::from(e),
         })?;
 
-    let handle = less_accounts_core::identity::format_handle(
-        &account.username,
-        &state.config.identity_domain,
-    );
+    let handle = format_handle(&account.username, &state.config.identity_domain);
+
+    let public_key = grant.app_public_key.clone();
+    let did = public_key
+        .as_ref()
+        .and_then(|jwk| compute_did_key(jwk).ok());
 
     Ok(Json(UserByThumbprintResponse {
-        user_id: account.id.to_string(),
         handle,
-        mailbox_id: grant.mailbox_id.unwrap_or_default(),
+        did,
+        public_key,
     }))
 }
 
@@ -926,7 +1008,7 @@ fn validate_p256_public_key(jwk: &serde_json::Value) -> Result<serde_json::Value
 fn verify_pkce(verifier: &str, challenge: &str) -> bool {
     let hash = Sha256::digest(verifier.as_bytes());
     let computed = B64URL.encode(hash);
-    computed == challenge
+    computed.as_bytes().ct_eq(challenge.as_bytes()).into()
 }
 
 fn verify_pkce_with_thumbprint(verifier: &str, thumbprint: &str, challenge: &str) -> bool {
@@ -934,7 +1016,7 @@ fn verify_pkce_with_thumbprint(verifier: &str, thumbprint: &str, challenge: &str
     input.extend_from_slice(thumbprint.as_bytes());
     let hash = Sha256::digest(&input);
     let computed = B64URL.encode(hash);
-    computed == challenge
+    computed.as_bytes().ct_eq(challenge.as_bytes()).into()
 }
 
 /// Generate a cryptographically random token (32 bytes, base64url-encoded).

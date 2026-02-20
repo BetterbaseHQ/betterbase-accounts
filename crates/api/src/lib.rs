@@ -7,7 +7,9 @@ pub mod state;
 pub mod verification;
 
 use axum::{
-    http::{header, Method},
+    http::{header, HeaderValue, Method},
+    middleware,
+    response::Response,
     routing::{delete, get, post, put},
     Router,
 };
@@ -138,10 +140,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/.well-known/webfinger", get(discovery::handle_webfinger))
         // SPA catch-all
         .fallback(webui::handle_spa)
-        // Middleware
+        // Middleware (applied in reverse order)
+        .layer(middleware::map_response(set_protocol_version_header))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(cors)
         .with_state(state)
+}
+
+/// Add `X-Protocol-Version: 1` to every response (immutable v1 contract).
+async fn set_protocol_version_header(mut resp: Response) -> Response {
+    resp.headers_mut()
+        .insert("x-protocol-version", HeaderValue::from_static("1"));
+    resp
 }
 
 async fn health() -> &'static str {

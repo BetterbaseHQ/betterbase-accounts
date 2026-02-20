@@ -42,15 +42,14 @@ pub async fn handle_password_init(
         .jwt
         .validate_verification_token(&req.verification_token)
         .map_err(|e| match e {
-            JwtError::TokenExpired => ApiError::bad_request("verification token expired"),
-            _ => ApiError::bad_request("invalid verification token"),
+            JwtError::TokenExpired => ApiError::unauthorized("verification token expired"),
+            _ => ApiError::unauthorized("invalid verification token"),
         })?;
 
-    if v_claims.purpose != "registration" {
-        return Err(ApiError::bad_request("invalid verification token purpose"));
-    }
-    if v_claims.email.to_lowercase() != req.email.to_lowercase() {
-        return Err(ApiError::bad_request("verification token email mismatch"));
+    if v_claims.purpose != "registration"
+        || v_claims.email.to_lowercase() != req.email.to_lowercase()
+    {
+        return Err(ApiError::unauthorized("invalid verification token"));
     }
 
     // Consume JTI (one-time-use)
@@ -114,6 +113,7 @@ pub async fn handle_password_init(
     Ok(Json(PasswordInitResponse {
         opaque_response: B64.encode(&result.response),
         state_token,
+        user_id: account.id.to_string(),
     }))
 }
 
@@ -343,7 +343,7 @@ pub async fn handle_validate(
     );
 
     Ok(Json(ValidateResponse {
-        user_id: account.id.to_string(),
+        id: account.id.to_string(),
         handle,
         email: account.email,
     }))

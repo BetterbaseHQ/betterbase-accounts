@@ -215,13 +215,11 @@ impl RateLimitStorage for PostgresStorage {
     }
 }
 
-/// Escalating lockout schedule (seconds): 1m, 5m, 15m, 60m, 24h, 24h, ...
+/// Escalating lockout schedule (seconds): 15m, 1h, 24h, 24h, ...
 fn lockout_duration_secs(lockout_count: i32) -> u64 {
     match lockout_count {
-        0 => 60,
-        1 => 300,
-        2 => 900,
-        3 => 3600,
+        0 => 900,
+        1 => 3600,
         _ => 86400,
     }
 }

@@ -53,6 +53,8 @@ pub struct PasswordInitResponse {
     /// Base64-encoded OPAQUE RegistrationResponse
     pub opaque_response: String,
     pub state_token: String,
+    /// Account ID for client-side key derivation
+    pub user_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,7 +101,7 @@ pub struct LoginFinalizeRequest {
 
 #[derive(Debug, Serialize)]
 pub struct ValidateResponse {
-    pub user_id: String,
+    pub id: String,
     pub handle: String,
     pub email: String,
 }
@@ -108,6 +110,8 @@ pub struct ValidateResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct PasswordChangeInitRequest {
+    #[serde(default)]
+    pub username: String,
     pub opaque_ke1: String,
 }
 
@@ -180,16 +184,21 @@ pub struct RecoverFinalizeRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserKey {
     pub service: String,
+    #[serde(rename = "keyName")]
     pub key_name: String,
     /// Hex-encoded key material
+    #[serde(rename = "keyMaterial")]
     pub key_material: String,
+    #[serde(rename = "serialNumber")]
     pub serial_number: i64,
+    #[serde(rename = "updatedAt")]
     pub updated_at: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct StoreKeyRequest {
     /// Hex-encoded key material
+    #[serde(rename = "keyMaterial")]
     pub key_material: String,
 }
 
@@ -260,7 +269,7 @@ pub struct OAuthConsentResponse {
     pub redirect_uri: String,
 }
 
-/// OAuth token request (form-encoded body).
+/// OAuth token request (JSON body).
 #[derive(Debug, Deserialize)]
 pub struct OAuthTokenRequest {
     pub grant_type: String,
@@ -274,6 +283,9 @@ pub struct OAuthTokenRequest {
     pub client_id: String,
     #[serde(default)]
     pub refresh_token: String,
+    /// Extended PKCE thumbprint (only for sync/files scopes)
+    #[serde(default)]
+    pub keys_jwk_thumbprint: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -281,30 +293,34 @@ pub struct OAuthTokenResponse {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: i64,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub refresh_token: String,
     pub scope: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keys_jwe: Option<String>,
+    /// user@domain identity handle (not in JWT to avoid leaking to resource servers)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub handle: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct OAuthUserInfoResponse {
     pub sub: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub preferred_username: Option<String>,
+    pub email_verified: Option<bool>,
 }
 
 /// `GET /oauth/grant-keypair` response
 #[derive(Debug, Serialize)]
 pub struct GrantKeypairResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_public_key: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub app_keypair_blob: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wrapped_scoped_key: Option<String>,
 }
 
 /// `POST /oauth/mailbox` request
@@ -316,16 +332,24 @@ pub struct RegisterMailboxRequest {
 /// `GET /v1/users/{username}/keys/{client_id}` response
 #[derive(Debug, Serialize)]
 pub struct UserPublicKeyResponse {
-    pub keys_jwk_thumbprint: String,
-    pub app_public_key: serde_json::Value,
+    pub handle: String,
+    pub client_id: String,
+    pub public_key: serde_json::Value,
+    pub did: String,
+    pub issuer: String,
+    pub user_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub mailbox_id: String,
 }
 
 /// `GET /v1/users/by-thumbprint/{thumbprint}` response
 #[derive(Debug, Serialize)]
 pub struct UserByThumbprintResponse {
-    pub user_id: String,
     pub handle: String,
-    pub mailbox_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<serde_json::Value>,
 }
 
 // ─── Discovery ────────────────────────────────────────────────────────────────
