@@ -17,7 +17,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use less_accounts_auth::es256::{jwk_thumbprint, Jwks};
+use less_accounts_auth::es256::Jwks;
 use less_accounts_auth::jwt::{OAuthAccessClaims, OAuthStateClaims};
 use less_accounts_core::{
     identity::{compute_did_key, format_handle, personal_space_id},
@@ -200,7 +200,7 @@ pub async fn handle_oauth_authorize(
     // Create OAuth state JWT
     let now = chrono::Utc::now();
     let oauth_state_claims = OAuthStateClaims {
-        client_id: client_id_str,
+        client_id: client_id_str.clone(),
         redirect_uri: redirect_uri.clone(),
         scope: scope.to_string(),
         state: client_state,
@@ -218,8 +218,18 @@ pub async fn handle_oauth_authorize(
         }
     };
 
-    // Redirect to SPA consent page
-    let consent_url = format!("{}/?state_token={}", state.config.web_base_url, state_token);
+    // Redirect to SPA consent page (must match Go server's URL format)
+    let client_name = client.name.clone();
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("oauth", &state_token);
+    serializer.append_pair("client_id", &client_id_str);
+    serializer.append_pair("client_name", &client_name);
+    serializer.append_pair("scope", scope);
+    if let Some(kjwk) = &q.keys_jwk {
+        serializer.append_pair("keys_jwk", kjwk);
+    }
+    let query = serializer.finish();
+    let consent_url = format!("{}/consent?{}", state.config.web_base_url, query);
     Redirect::to(&consent_url).into_response()
 }
 
@@ -228,14 +238,18 @@ pub async fn handle_oauth_authorize(
 #[derive(Deserialize)]
 pub struct ConsentBody {
     // OAuth state JWT created by /oauth/authorize
-    pub state_token: Option<String>,
-    // deny=true to reject
+    pub oauth_state: Option<String>,
+    // User decision (true = allow, false = deny)
     #[serde(default)]
-    pub deny: bool,
+    pub approved: bool,
+    #[serde(default)]
+    pub keys_jwe: Option<String>,
+    #[serde(default)]
+    pub keys_jwk_thumbprint: Option<String>,
     #[serde(default)]
     pub wrapped_scoped_key: Option<String>,
     #[serde(default)]
-    pub app_public_key: Option<serde_json::Value>,
+    pub app_public_key_jwk: Option<String>,
     #[serde(default)]
     pub app_keypair_blob: Option<String>,
 }
@@ -251,12 +265,12 @@ pub async fn handle_oauth_consent(
         Err(e) => return e.into_response(),
     };
 
-    let state_token = match &req.state_token {
+    let state_token = match &req.oauth_state {
         Some(t) => t.clone(),
         None => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "missing state_token"})),
+                Json(serde_json::json!({"error": "missing oauth_state"})),
             )
                 .into_response();
         }
@@ -279,101 +293,95 @@ pub async fn handle_oauth_consent(
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid client_id").into_response(),
     };
 
-    let _client = match state.storage.get_oauth_client(client_id).await {
-        Ok(c) => c,
-        Err(_) => {
-            return redirect_with_error(
-                &oauth_state.redirect_uri,
-                &oauth_state.state,
-                "invalid_client",
-                "unknown client",
-            )
-        }
-    };
-
-    // Handle deny
-    if req.deny {
-        return redirect_with_error(
+    // Handle deny — return JSON with redirect_uri (SPA does the redirect)
+    if !req.approved {
+        let deny_url = build_redirect_url_with_error(
             &oauth_state.redirect_uri,
             &oauth_state.state,
             "access_denied",
-            "user denied access",
+            "user denied the request",
         );
+        return (
+            StatusCode::OK,
+            Json(OAuthConsentResponse {
+                redirect_uri: deny_url,
+            }),
+        )
+            .into_response();
     }
 
-    // Get or create grant
-    let grant = if let Some(ref keys_jwk) = oauth_state.keys_jwk {
-        let thumbprint = match jwk_thumbprint(keys_jwk) {
-            Some(t) => t,
-            None => {
-                return redirect_with_error(
-                    &oauth_state.redirect_uri,
-                    &oauth_state.state,
+    // Store wrapped scoped key if provided (first-write-wins, matching Go behavior)
+    if let Some(ref wsk) = req.wrapped_scoped_key {
+        let key_bytes = match B64.decode(wsk) {
+            Ok(b) => b,
+            Err(_) => {
+                return write_oauth_error(
+                    StatusCode::BAD_REQUEST,
                     "invalid_request",
-                    "invalid keys_jwk",
+                    "invalid wrapped scoped key",
                 );
             }
         };
-        match state
-            .storage
-            .get_or_create_oauth_grant_with_thumbprint(
-                client_id,
-                auth_ctx.account_id,
-                &oauth_state.scope,
-                &thumbprint,
-            )
-            .await
-        {
-            Ok(g) => g,
-            Err(e) => return ApiError::from(e).into_response(),
+        if key_bytes.len() != WRAPPED_SCOPED_KEY_SIZE {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "invalid wrapped scoped key: must be 41 bytes",
+            );
         }
-    } else {
-        match state
+        let grant = match state
             .storage
             .get_or_create_oauth_grant(client_id, auth_ctx.account_id, &oauth_state.scope)
             .await
         {
             Ok(g) => g,
             Err(e) => return ApiError::from(e).into_response(),
-        }
-    };
-
-    // Store wrapped scoped key (first-write-wins)
-    if let Some(ref wsk) = req.wrapped_scoped_key {
-        let key_bytes = match B64.decode(wsk) {
-            Ok(b) => b,
-            Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "invalid wrapped_scoped_key encoding",
-                )
-                    .into_response();
-            }
         };
-        if key_bytes.len() != WRAPPED_SCOPED_KEY_SIZE {
-            return (
-                StatusCode::BAD_REQUEST,
-                "wrapped_scoped_key must be 41 bytes",
-            )
-                .into_response();
+        if grant.wrapped_scoped_key.is_none() || grant.wrapped_scoped_key.as_deref() == Some(&[]) {
+            let _ = state
+                .storage
+                .update_grant_wrapped_scoped_key(grant.id, &key_bytes)
+                .await;
         }
-        let _ = state
-            .storage
-            .update_grant_wrapped_scoped_key(grant.id, &key_bytes)
-            .await;
     }
 
-    // Store app keypair blob (first-write-wins)
+    // Store app keypair blob if provided (matching Go behavior)
     if let Some(ref blob) = req.app_keypair_blob {
         if blob.len() > MAX_KEYPAIR_BLOB_SIZE {
-            return (StatusCode::BAD_REQUEST, "app_keypair_blob too large").into_response();
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "app_keypair_blob too large",
+            );
         }
-        if let Some(ref pub_key) = req.app_public_key {
-            let canonical = match validate_p256_public_key(pub_key) {
+        if let Some(ref pub_key_str) = req.app_public_key_jwk {
+            let pub_key: serde_json::Value = match serde_json::from_str(pub_key_str) {
+                Ok(v) => v,
+                Err(_) => {
+                    return write_oauth_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request",
+                        "invalid app_public_key_jwk: invalid JSON",
+                    );
+                }
+            };
+            let canonical = match validate_p256_public_key(&pub_key) {
                 Ok(c) => c,
                 Err(_) => {
-                    return (StatusCode::BAD_REQUEST, "invalid app_public_key").into_response();
+                    return write_oauth_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request",
+                        "invalid app_public_key_jwk",
+                    );
                 }
+            };
+            let grant = match state
+                .storage
+                .get_or_create_oauth_grant(client_id, auth_ctx.account_id, &oauth_state.scope)
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return ApiError::from(e).into_response(),
             };
             let _ = state
                 .storage
@@ -382,26 +390,8 @@ pub async fn handle_oauth_consent(
         }
     }
 
-    // Reload grant to get any updated fields
-    let grant = match state.storage.get_oauth_grant(grant.id).await {
-        Ok(g) => g,
-        Err(e) => return ApiError::from(e).into_response(),
-    };
-
-    // Generate JWE for scoped key if keys_jwk present and we have the key
-    let (keys_jwe, keys_jwk_thumbprint_str) = if let Some(ref keys_jwk) = oauth_state.keys_jwk {
-        let thumbprint = jwk_thumbprint(keys_jwk);
-        let jwe = if let Some(ref wsk) = grant.wrapped_scoped_key {
-            generate_jwe(keys_jwk, wsk).ok()
-        } else {
-            None
-        };
-        (jwe, thumbprint)
-    } else {
-        (None, None)
-    };
-
     // Generate authorization code
+    // Pass through keys_jwe and keys_jwk_thumbprint from request (SPA generates JWE client-side)
     let raw_code = generate_random_token();
     let now = chrono::Utc::now();
 
@@ -412,8 +402,8 @@ pub async fn handle_oauth_consent(
         redirect_uri: oauth_state.redirect_uri.clone(),
         scope: oauth_state.scope.clone(),
         code_challenge: oauth_state.code_challenge.clone(),
-        keys_jwe: keys_jwe.clone(),
-        keys_jwk_thumbprint: keys_jwk_thumbprint_str,
+        keys_jwe: req.keys_jwe.clone(),
+        keys_jwk_thumbprint: req.keys_jwk_thumbprint.clone(),
         created_at: now,
         expires_at: now + chrono::Duration::seconds(OAUTH_CODE_EXPIRY_SECS),
     };
@@ -422,9 +412,15 @@ pub async fn handle_oauth_consent(
         return ApiError::from(e).into_response();
     }
 
-    // Redirect to client with code
+    // Return JSON with redirect_uri (SPA does the redirect via window.location.href)
     let redirect = build_redirect_url(&oauth_state.redirect_uri, &oauth_state.state, &raw_code);
-    Redirect::to(&redirect).into_response()
+    (
+        StatusCode::OK,
+        Json(OAuthConsentResponse {
+            redirect_uri: redirect,
+        }),
+    )
+        .into_response()
 }
 
 // ─── Token ───────────────────────────────────────────────────────────────────
@@ -854,19 +850,23 @@ pub async fn handle_grant_keypair(
     let client_id =
         Uuid::parse_str(client_id_str).map_err(|_| ApiError::bad_request("invalid client_id"))?;
 
+    // Return empty blob if no grant exists (first-time consent), matching Go behavior
     let grant = state
         .storage
         .get_oauth_grant_by_account_and_client(auth_ctx.account_id, client_id)
-        .await
-        .map_err(|e| match e {
-            StorageError::OAuthGrantNotFound => ApiError::not_found("grant not found"),
-            _ => ApiError::from(e),
-        })?;
+        .await;
 
-    Ok(Json(GrantKeypairResponse {
-        app_keypair_blob: grant.app_keypair_blob.unwrap_or_default(),
-        wrapped_scoped_key: grant.wrapped_scoped_key.map(|k| B64.encode(&k)),
-    }))
+    match grant {
+        Ok(g) => Ok(Json(GrantKeypairResponse {
+            app_keypair_blob: g.app_keypair_blob.unwrap_or_default(),
+            wrapped_scoped_key: g.wrapped_scoped_key.map(|k| B64.encode(&k)),
+        })),
+        Err(StorageError::OAuthGrantNotFound) => Ok(Json(GrantKeypairResponse {
+            app_keypair_blob: String::new(),
+            wrapped_scoped_key: None,
+        })),
+        Err(e) => Err(ApiError::from(e)),
+    }
 }
 
 // ─── User public key ─────────────────────────────────────────────────────────
@@ -877,41 +877,39 @@ pub async fn handle_user_public_key(
     headers: HeaderMap,
     Path((username, client_id_str)): Path<(String, String)>,
 ) -> Result<Json<UserPublicKeyResponse>, ApiError> {
-    // Requires OAuth access token (caller must be the account owner)
+    // Requires OAuth access token
     let claims = extract_oauth_token(&state, &headers)?;
 
-    let client_id =
-        Uuid::parse_str(&client_id_str).map_err(|_| ApiError::bad_request("invalid client_id"))?;
-
-    // Only the caller's own client_id is allowed
+    // Callers can only look up keys for their own client (app)
     if claims.client_id != client_id_str {
-        return Err(ApiError::forbidden(
-            "can only look up your own client's public key",
-        ));
-    }
-
-    let account_id =
-        Uuid::parse_str(&claims.sub).map_err(|_| ApiError::unauthorized("invalid token"))?;
-
-    // Verify account matches username
-    let account = state.storage.get_account_by_id(account_id).await?;
-    if account.username != username {
         return Err(ApiError::not_found("not found"));
     }
 
+    if username.is_empty() || client_id_str.is_empty() {
+        return Err(ApiError::not_found("not found"));
+    }
+
+    let client_id =
+        Uuid::parse_str(&client_id_str).map_err(|_| ApiError::not_found("not found"))?;
+
+    // Look up account by username (any user, not just the caller)
+    let account = state
+        .storage
+        .get_account_by_username(&state.config.issuer, &username)
+        .await
+        .map_err(|_| ApiError::not_found("not found"))?;
+
     let grant = state
         .storage
-        .get_oauth_grant_by_account_and_client(account_id, client_id)
+        .get_oauth_grant_by_account_and_client(account.id, client_id)
         .await
-        .map_err(|e| match e {
-            StorageError::OAuthGrantNotFound => ApiError::not_found("not found"),
-            _ => ApiError::from(e),
-        })?;
+        .map_err(|_| ApiError::not_found("not found"))?;
 
     let public_key = grant
         .app_public_key
         .ok_or_else(|| ApiError::not_found("not found"))?;
 
+    // Anti-enumeration: treat malformed keys same as missing
     let did = compute_did_key(&public_key).map_err(|_| ApiError::not_found("not found"))?;
 
     Ok(Json(UserPublicKeyResponse {
@@ -1125,35 +1123,30 @@ async fn issue_access_token(
         .map_err(|_| ApiError::internal())
 }
 
-/// Generate a JWE wrapping `plaintext` for the given P-256 public key JWK.
-///
-/// Uses ECDH-ES+A256KW key agreement with A256GCM content encryption.
-fn generate_jwe(recipient_jwk: &serde_json::Value, plaintext: &[u8]) -> Result<String, String> {
-    use josekit::{
-        jwe::{JweHeader, ECDH_ES_A256KW},
-        jwk::Jwk as JosekitJwk,
-    };
-
-    let jwk_str = serde_json::to_string(recipient_jwk).map_err(|e| e.to_string())?;
-    let jose_jwk = JosekitJwk::from_bytes(jwk_str.as_bytes()).map_err(|e| e.to_string())?;
-
-    let encrypter = ECDH_ES_A256KW
-        .encrypter_from_jwk(&jose_jwk)
-        .map_err(|e| e.to_string())?;
-
-    let mut header = JweHeader::new();
-    header.set_content_encryption("A256GCM");
-
-    josekit::jwe::serialize_compact(plaintext, &header, &encrypter).map_err(|e| e.to_string())
+fn build_redirect_url(redirect_uri: &str, state: &str, code: &str) -> String {
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("code", code);
+    if !state.is_empty() {
+        serializer.append_pair("state", state);
+    }
+    let query = serializer.finish();
+    let sep = if redirect_uri.contains('?') { "&" } else { "?" };
+    format!("{redirect_uri}{sep}{query}")
 }
 
-fn build_redirect_url(redirect_uri: &str, state: &str, code: &str) -> String {
+fn build_redirect_url_with_error(
+    redirect_uri: &str,
+    state: &str,
+    error: &str,
+    description: &str,
+) -> String {
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("state", state);
+    serializer.append_pair("error", error);
+    serializer.append_pair("error_description", description);
+    let query = serializer.finish();
     let sep = if redirect_uri.contains('?') { "&" } else { "?" };
-    if state.is_empty() {
-        format!("{redirect_uri}{sep}code={code}")
-    } else {
-        format!("{redirect_uri}{sep}code={code}&state={state}")
-    }
+    format!("{redirect_uri}{sep}{query}")
 }
 
 fn oauth_error_redirect(
@@ -1174,12 +1167,7 @@ fn redirect_with_error(
     error: &str,
     description: &str,
 ) -> Response {
-    let sep = if redirect_uri.contains('?') { "&" } else { "?" };
-    let url = if state.is_empty() {
-        format!("{redirect_uri}{sep}error={error}&error_description={description}")
-    } else {
-        format!("{redirect_uri}{sep}error={error}&error_description={description}&state={state}")
-    };
+    let url = build_redirect_url_with_error(redirect_uri, state, error, description);
     Redirect::to(&url).into_response()
 }
 

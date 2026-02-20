@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT rb.blob\n            FROM recovery_blobs rb\n            JOIN accounts a ON a.id = rb.account_id\n            WHERE a.issuer = $1 AND a.email = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "blob",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dde8bdcd76cd3a69a36dc10d4a491691d76ed9b364c6f7ef1d243d11b654612b"
+}

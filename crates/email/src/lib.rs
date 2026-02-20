@@ -108,12 +108,20 @@ pub struct DevMailer;
 #[async_trait]
 impl Mailer for DevMailer {
     async fn send_verification_code(&self, email: &VerificationEmail) -> Result<(), EmailError> {
-        tracing::info!(
-            to = %email.to,
-            purpose = %email.purpose,
-            code = %email.code,
-            "[DEV] Verification email"
-        );
+        // Print in the same format as the Go server's DevMode so e2e tests
+        // can extract verification codes from Docker container logs.
+        let subject = match email.purpose.as_str() {
+            "recovery" => "Your password reset code",
+            _ => "Your verification code",
+        };
+        println!("\n========== EMAIL PREVIEW ==========");
+        println!("To: {}", email.to);
+        println!("Subject: {subject}");
+        println!("-----------------------------------");
+        println!("Your verification code is: {}", email.code);
+        println!("\nThis code will expire in 10 minutes.");
+        println!("\nIf you didn't request this code, you can safely ignore this email.");
+        println!("===================================");
         Ok(())
     }
 }

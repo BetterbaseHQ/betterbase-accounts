@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, client_id, account_id, scope,\n                   keys_jwk_thumbprint, app_public_key, app_keypair_blob,\n                   wrapped_scoped_key, mailbox_id,\n                   created_at, updated_at, last_used_at\n            FROM oauth_grants WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "scope",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "keys_jwk_thumbprint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "app_public_key",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "app_keypair_blob",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "wrapped_scoped_key",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 8,
+        "name": "mailbox_id",
+        "type_info": "Bpchar"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "last_used_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d03ef40cfc394a61aca08ba66ecce5b9bf3df1be2261de8a4a66765cd42cf655"
+}

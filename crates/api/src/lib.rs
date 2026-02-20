@@ -67,8 +67,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/accounts", delete(auth::handle_delete_account))
         // User keys
         .route("/v1/keys", get(keys::handle_list_keys))
-        .route("/v1/keys/:service/:key_name", put(keys::handle_store_key))
-        .route("/v1/keys/:service/:key_name", get(keys::handle_get_key))
+        .route("/v1/keys/{service}/{key_name}", put(keys::handle_store_key))
+        .route("/v1/keys/{service}/{key_name}", get(keys::handle_get_key))
         // Root key
         .route("/v1/accounts/root-key", get(rootkey::handle_get_root_key))
         .route("/v1/accounts/root-key", put(rootkey::handle_set_root_key))
@@ -125,11 +125,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/.well-known/jwks.json", get(oauth::handle_jwks))
         // User public key lookups
         .route(
-            "/v1/users/:username/keys/:client_id",
+            "/v1/users/{username}/keys/{client_id}",
             get(oauth::handle_user_public_key),
         )
         .route(
-            "/v1/users/by-thumbprint/:thumbprint",
+            "/v1/users/by-thumbprint/{thumbprint}",
             get(oauth::handle_user_by_thumbprint),
         )
         // Discovery

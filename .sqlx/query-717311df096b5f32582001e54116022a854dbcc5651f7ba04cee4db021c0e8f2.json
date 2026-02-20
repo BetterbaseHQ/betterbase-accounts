@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO login_attempts (issuer, username, failed_count, first_failed_at, lockout_count)\n            VALUES ($1, $2, 1, NOW(), 0)\n            ON CONFLICT (issuer, username) DO UPDATE\n            SET failed_count    = CASE\n                WHEN EXTRACT(EPOCH FROM (NOW() - login_attempts.first_failed_at))::bigint >= $3\n                     THEN 1\n                ELSE login_attempts.failed_count + 1\n                END,\n                first_failed_at = CASE\n                WHEN EXTRACT(EPOCH FROM (NOW() - login_attempts.first_failed_at))::bigint >= $3\n                     THEN NOW()\n                ELSE login_attempts.first_failed_at\n                END\n            RETURNING failed_count, lockout_count\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "failed_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "lockout_count",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "717311df096b5f32582001e54116022a854dbcc5651f7ba04cee4db021c0e8f2"
+}

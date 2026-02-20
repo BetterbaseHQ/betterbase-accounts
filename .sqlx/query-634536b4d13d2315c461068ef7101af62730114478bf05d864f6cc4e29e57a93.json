@@ -1,0 +1,136 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                g.id            AS grant_id,\n                g.client_id,\n                g.account_id,\n                g.scope,\n                g.keys_jwk_thumbprint,\n                g.app_public_key,\n                g.app_keypair_blob,\n                g.wrapped_scoped_key,\n                g.mailbox_id,\n                g.created_at    AS grant_created_at,\n                g.updated_at    AS grant_updated_at,\n                g.last_used_at,\n                a.id            AS acc_id,\n                a.issuer,\n                a.username,\n                a.email,\n                a.opaque_registration,\n                a.wrapped_root_key,\n                a.created_at    AS acc_created_at,\n                a.updated_at    AS acc_updated_at\n            FROM oauth_grants g\n            JOIN accounts a ON a.id = g.account_id\n            WHERE g.keys_jwk_thumbprint = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "account_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "scope",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "keys_jwk_thumbprint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "app_public_key",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "app_keypair_blob",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "wrapped_scoped_key",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 8,
+        "name": "mailbox_id",
+        "type_info": "Bpchar"
+      },
+      {
+        "ordinal": 9,
+        "name": "grant_created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "grant_updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "last_used_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "acc_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 13,
+        "name": "issuer",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "email",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 16,
+        "name": "opaque_registration",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 17,
+        "name": "wrapped_root_key",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 18,
+        "name": "acc_created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 19,
+        "name": "acc_updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "634536b4d13d2315c461068ef7101af62730114478bf05d864f6cc4e29e57a93"
+}

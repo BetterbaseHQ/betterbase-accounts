@@ -16,16 +16,13 @@ use crate::state::AppState;
 pub async fn handle_server_metadata(State(state): State<AppState>) -> Response {
     let meta = ServerMetadataResponse {
         version: 1,
-        federation: false,
+        federation: state.config.federation_ws_endpoint.is_some(),
         accounts_endpoint: state.config.issuer.clone(),
         sync_endpoint: state.config.sync_endpoint.clone(),
         federation_ws: state.config.federation_ws_endpoint.clone(),
         jwks_uri: format!("{}/.well-known/jwks.json", state.config.issuer),
         webfinger: format!("{}/.well-known/webfinger", state.config.issuer),
-        protocols: vec![
-            "less:encrypt:v1".to_string(),
-            "less:epoch-salt:v1".to_string(),
-        ],
+        protocols: vec!["less-rpc-v1".to_string()],
         pow_required: state.config.cap_enabled,
     };
 

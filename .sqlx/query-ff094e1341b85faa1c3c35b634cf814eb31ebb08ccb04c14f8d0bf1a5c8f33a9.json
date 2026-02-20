@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE login_attempts\n                SET locked_until  = $3,\n                    failed_count  = 0,\n                    first_failed_at = NULL,\n                    lockout_count = lockout_count + 1\n                WHERE issuer = $1 AND username = $2\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ff094e1341b85faa1c3c35b634cf814eb31ebb08ccb04c14f8d0bf1a5c8f33a9"
+}

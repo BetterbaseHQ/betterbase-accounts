@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO jwt_keys (secret_key)\n            SELECT $1\n            WHERE NOT EXISTS (SELECT 1 FROM jwt_keys)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "61d6b31f6cd595d0ad45a1e629e07806bb7e0157bef84b0b341856d2e919a27f"
+}

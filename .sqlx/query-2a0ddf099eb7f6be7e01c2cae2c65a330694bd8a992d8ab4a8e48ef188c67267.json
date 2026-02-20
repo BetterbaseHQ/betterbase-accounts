@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM used_refresh_tokens WHERE used_at < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2a0ddf099eb7f6be7e01c2cae2c65a330694bd8a992d8ab4a8e48ef188c67267"
+}

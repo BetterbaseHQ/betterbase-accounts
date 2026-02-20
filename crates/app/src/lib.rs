@@ -62,11 +62,13 @@ impl AppConfig {
                 .unwrap_or_else(|_| "0.0.0.0:5377".to_string()),
             sync_endpoint: std::env::var("SYNC_ENDPOINT").ok(),
             federation_ws_endpoint: std::env::var("FEDERATION_WS_ENDPOINT").ok(),
-            web_base_url: std::env::var("WEB_BASE_URL")
-                .unwrap_or_else(|_| "http://localhost:5377".to_string()),
+            web_base_url: std::env::var("WEB_BASE_URL").unwrap_or_default(),
             log_format: std::env::var("LOG_FORMAT").unwrap_or_else(|_| "text".to_string()),
 
-            cap_enabled: std::env::var("CAP_KEY_ID").is_ok(),
+            cap_enabled: std::env::var("CAP_KEY_ID")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .is_some(),
             cap_key_id: std::env::var("CAP_KEY_ID").unwrap_or_default(),
             cap_secret: std::env::var("CAP_SECRET").unwrap_or_default(),
             cap_verify_url: std::env::var("CAP_VERIFY_URL")

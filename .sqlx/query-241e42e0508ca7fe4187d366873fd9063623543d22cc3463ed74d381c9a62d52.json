@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO used_verification_tokens (jti, expires_at)\n            VALUES ($1, $2)\n            ON CONFLICT DO NOTHING\n            RETURNING jti\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "jti",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "241e42e0508ca7fe4187d366873fd9063623543d22cc3463ed74d381c9a62d52"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE oauth_grants\n            SET app_public_key = $2, app_keypair_blob = $3\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f9dec66309c86f33d4babbead1941165f670f9e2b2a5aac41f6accb32d4fc4dd"
+}

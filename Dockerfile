@@ -4,6 +4,7 @@ FROM rust:1.88-bookworm AS builder
 WORKDIR /app
 
 COPY . .
+ENV SQLX_OFFLINE=true
 RUN cargo build --locked --release \
     -p less-accounts-server \
     -p less-accounts-keygen \

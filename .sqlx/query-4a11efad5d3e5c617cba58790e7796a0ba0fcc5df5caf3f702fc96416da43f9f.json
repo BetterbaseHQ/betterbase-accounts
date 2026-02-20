@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE recovery_requests SET request_count = request_count - 1 WHERE email = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4a11efad5d3e5c617cba58790e7796a0ba0fcc5df5caf3f702fc96416da43f9f"
+}

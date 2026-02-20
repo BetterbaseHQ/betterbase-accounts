@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO recovery_blobs (account_id, blob)\n                VALUES ($1, $2)\n                ON CONFLICT (account_id) DO UPDATE SET blob = EXCLUDED.blob\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "895a29edd6cfbb6e35d63a88cf49fa110cec98e46f9725238b2d8538056d8842"
+}
