@@ -44,9 +44,9 @@ const OAUTH_CODE_EXPIRY_SECS: i64 = 600; // 10 minutes
 const REFRESH_TOKEN_EXPIRY_SECS: i64 = 30 * 24 * 3600; // 30 days
 
 /// OIDC scopes always allowed
-const OIDC_SCOPES: &[&str] = &["openid", "profile", "email", "address", "phone"];
+const OIDC_SCOPES: &[&str] = &["openid", "profile", "email"];
 /// Capability scopes gated by OAuth client config
-const CAPABILITY_SCOPES: &[&str] = &["sync", "files", "keys", "inference"];
+const CAPABILITY_SCOPES: &[&str] = &["sync", "files"];
 
 // ─── Authorize ───────────────────────────────────────────────────────────────
 
@@ -336,10 +336,18 @@ pub async fn handle_oauth_consent(
             Err(e) => return ApiError::from(e).into_response(),
         };
         if grant.wrapped_scoped_key.is_none() || grant.wrapped_scoped_key.as_deref() == Some(&[]) {
-            let _ = state
+            if let Err(e) = state
                 .storage
                 .update_grant_wrapped_scoped_key(grant.id, &key_bytes)
-                .await;
+                .await
+            {
+                tracing::error!(error = %e, "failed to persist wrapped scoped key");
+                return write_oauth_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    "failed to save scoped key",
+                );
+            }
         }
     }
 
@@ -381,10 +389,18 @@ pub async fn handle_oauth_consent(
                 Ok(g) => g,
                 Err(e) => return ApiError::from(e).into_response(),
             };
-            let _ = state
+            if let Err(e) = state
                 .storage
                 .update_grant_keypair(grant.id, &canonical, blob)
-                .await;
+                .await
+            {
+                tracing::error!(error = %e, "failed to persist app keypair");
+                return write_oauth_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    "failed to save app credentials",
+                );
+            }
         }
     }
 
@@ -646,7 +662,15 @@ async fn handle_authorization_code_grant(state: &AppState, req: TokenForm) -> Re
         handle,
     };
 
-    (StatusCode::OK, Json(response)).into_response()
+    (
+        StatusCode::OK,
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(response),
+    )
+        .into_response()
 }
 
 async fn handle_refresh_token_grant(state: &AppState, req: TokenForm) -> Response {
@@ -754,7 +778,15 @@ async fn handle_refresh_token_grant(state: &AppState, req: TokenForm) -> Respons
         handle,
     };
 
-    (StatusCode::OK, Json(response)).into_response()
+    (
+        StatusCode::OK,
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(response),
+    )
+        .into_response()
 }
 
 // ─── UserInfo ────────────────────────────────────────────────────────────────
@@ -1130,16 +1162,11 @@ async fn issue_access_token(
     grant: &OAuthGrant,
     scope: &str,
 ) -> Result<String, ApiError> {
-    let _account = state.storage.get_account_by_id(grant.account_id).await?;
-
     let scopes: Vec<&str> = scope.split_whitespace().collect();
 
     let mut aud = vec![grant.client_id.to_string()];
     if scopes.contains(&"sync") || scopes.contains(&"files") {
         aud.push("less-sync".to_string());
-    }
-    if scopes.contains(&"inference") {
-        aud.push("less-inference".to_string());
     }
 
     let did = grant
