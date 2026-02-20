@@ -15,5 +15,6 @@ less-accounts-cap = { path = "../cap" }
 less-accounts-core = { path = "../core" }
 less-accounts-email = { path = "../email" }
 less-accounts-storage = { path = "../storage" }
+rand.workspace = true
 tokio.workspace = true
 tracing.workspace = true

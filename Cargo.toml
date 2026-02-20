@@ -21,6 +21,8 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1.0"
+josekit = "0.10"
+opaque-ke = { version = "4.1.0-pre.1", features = ["ristretto255", "serde"] }
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros"] }
 base64 = "0.22"
@@ -32,13 +34,14 @@ http = "1.2"
 jsonwebtoken = { version = "10.1", default-features = false, features = ["rust_crypto"] }
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 p256 = { version = "0.13", features = ["arithmetic", "jwk"] }
-rand = "0.9"
+rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+mime_guess = "2"
 rust-embed = "8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros", "uuid", "chrono"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros", "uuid", "chrono", "json"] }
 thiserror = "2.0"
 tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
 tower = "0.5"

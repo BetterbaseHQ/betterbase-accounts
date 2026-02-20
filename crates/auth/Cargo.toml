@@ -7,12 +7,16 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+axum.workspace = true
+hex.workspace = true
 base64.workspace = true
 bs58.workspace = true
 chrono.workspace = true
 hmac.workspace = true
 jsonwebtoken.workspace = true
 less-accounts-core = { path = "../core" }
+less-accounts-storage = { path = "../storage" }
+opaque-ke.workspace = true
 p256.workspace = true
 rand.workspace = true
 serde.workspace = true

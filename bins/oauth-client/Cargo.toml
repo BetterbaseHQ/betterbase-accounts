@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 less-accounts-storage = { path = "../../crates/storage" }
+sqlx.workspace = true
 tokio.workspace = true
 uuid.workspace = true

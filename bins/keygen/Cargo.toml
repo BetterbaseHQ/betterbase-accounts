@@ -6,5 +6,4 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-hex.workspace = true
-rand.workspace = true
+less-accounts-auth = { path = "../../crates/auth" }
