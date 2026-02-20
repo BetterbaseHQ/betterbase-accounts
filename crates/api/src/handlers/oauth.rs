@@ -46,7 +46,7 @@ const REFRESH_TOKEN_EXPIRY_SECS: i64 = 30 * 24 * 3600; // 30 days
 /// OIDC scopes always allowed
 const OIDC_SCOPES: &[&str] = &["openid", "profile", "email"];
 /// Capability scopes gated by OAuth client config
-const CAPABILITY_SCOPES: &[&str] = &["sync", "files"];
+const CAPABILITY_SCOPES: &[&str] = &["sync", "files", "inference"];
 
 // ─── Authorize ───────────────────────────────────────────────────────────────
 
@@ -459,49 +459,11 @@ pub struct TokenForm {
 
 /// POST /oauth/token
 ///
-/// Per RFC 6749 §4.1.3, the token endpoint MUST accept `application/x-www-form-urlencoded`.
-/// We also accept `application/json` for compatibility with our TypeScript client.
+/// Per RFC 6749 §4.1.3, the token endpoint accepts `application/x-www-form-urlencoded`.
 pub async fn handle_oauth_token(
     State(state): State<AppState>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
+    axum::extract::Form(req): axum::extract::Form<TokenForm>,
 ) -> Response {
-    let req: TokenForm = {
-        let content_type = headers
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-
-        if content_type.starts_with("application/x-www-form-urlencoded") {
-            match serde_urlencoded::from_bytes(&body) {
-                Ok(f) => f,
-                Err(_) => {
-                    return write_oauth_error(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request",
-                        "invalid form body",
-                    );
-                }
-            }
-        } else if content_type.starts_with("application/json") || content_type.is_empty() {
-            match serde_json::from_slice(&body) {
-                Ok(f) => f,
-                Err(_) => {
-                    return write_oauth_error(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request",
-                        "invalid request body",
-                    );
-                }
-            }
-        } else {
-            return write_oauth_error(
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "invalid_request",
-                "unsupported Content-Type; use application/x-www-form-urlencoded",
-            );
-        }
-    };
     match req.grant_type.as_str() {
         "authorization_code" => handle_authorization_code_grant(&state, req).await,
         "refresh_token" => handle_refresh_token_grant(&state, req).await,
@@ -1167,6 +1129,9 @@ async fn issue_access_token(
     let mut aud = vec![grant.client_id.to_string()];
     if scopes.contains(&"sync") || scopes.contains(&"files") {
         aud.push("less-sync".to_string());
+    }
+    if scopes.contains(&"inference") {
+        aud.push("less-inference".to_string());
     }
 
     let did = grant

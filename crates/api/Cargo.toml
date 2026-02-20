@@ -12,7 +12,6 @@ base64.workspace = true
 chrono.workspace = true
 form_urlencoded = "1"
 p256.workspace = true
-serde_urlencoded = "0.7"
 hex.workspace = true
 hmac.workspace = true
 http.workspace = true
