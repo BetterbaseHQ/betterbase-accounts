@@ -317,8 +317,8 @@ pub struct OAuthUserInfoResponse {
 /// `GET /oauth/grant-keypair` response
 #[derive(Debug, Serialize)]
 pub struct GrantKeypairResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_keypair_blob: Option<String>,
+    /// Always emitted (empty string when absent), matching Go's no-omitempty field.
+    pub app_keypair_blob: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wrapped_scoped_key: Option<String>,
 }

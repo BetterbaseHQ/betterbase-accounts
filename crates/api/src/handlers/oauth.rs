@@ -864,7 +864,7 @@ pub async fn handle_grant_keypair(
         })?;
 
     Ok(Json(GrantKeypairResponse {
-        app_keypair_blob: grant.app_keypair_blob,
+        app_keypair_blob: grant.app_keypair_blob.unwrap_or_default(),
         wrapped_scoped_key: grant.wrapped_scoped_key.map(|k| B64.encode(&k)),
     }))
 }
@@ -935,6 +935,15 @@ pub async fn handle_user_by_thumbprint(
 ) -> Result<Json<UserByThumbprintResponse>, ApiError> {
     // Requires auth token
     let _auth_ctx = extract_auth(&state, &headers)?;
+
+    // Validate thumbprint is non-empty base64url (anti-enumeration: return 404 for bad format)
+    if thumbprint.is_empty()
+        || !thumbprint
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(ApiError::not_found("not found"));
+    }
 
     let (account, grant) = state
         .storage
