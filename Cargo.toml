@@ -1,0 +1,48 @@
+[workspace]
+members = [
+  "crates/core",
+  "crates/auth",
+  "crates/storage",
+  "crates/email",
+  "crates/cap",
+  "crates/api",
+  "crates/app",
+  "bins/server",
+  "bins/keygen",
+  "bins/oauth-client",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.88"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["macros"] }
+base64 = "0.22"
+bs58 = "0.5"
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+hex = "0.4"
+hmac = "0.12"
+http = "1.2"
+jsonwebtoken = { version = "10.1", default-features = false, features = ["rust_crypto"] }
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+p256 = { version = "0.13", features = ["arithmetic", "jwk"] }
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rust-embed = "8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros", "uuid", "chrono"] }
+thiserror = "2.0"
+tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1.16", features = ["serde", "v4", "v5"] }

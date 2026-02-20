@@ -1,0 +1,19 @@
+FROM rust:1.88-bookworm
+
+RUN cargo install --locked cargo-watch
+
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY bins ./bins
+COPY crates ./crates
+RUN cargo fetch --locked
+
+COPY docker/dev-entrypoint.sh /usr/local/bin/less-accounts-dev-entrypoint
+RUN chmod +x /usr/local/bin/less-accounts-dev-entrypoint
+
+ENV CARGO_TARGET_DIR=/tmp/less-accounts-rs-target
+
+EXPOSE 5377
+
+CMD ["/usr/local/bin/less-accounts-dev-entrypoint"]
