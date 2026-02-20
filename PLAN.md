@@ -2,6 +2,13 @@
 
 Port of `less-accounts` (Go) to Rust, following the architecture established in `less-sync-rs`.
 
+## Ground Rules
+
+- **Faithful port.** The Go source at `/Users/nchapman/Code/lessisbetter/less-platform/less-accounts` is the reference implementation. Always cross-check behavior, edge cases, and error handling against it. Don't invent new behavior.
+- **Idiomatic Rust.** Newtypes for domain concepts, `thiserror` error enums, exhaustive pattern matching, trait-based abstractions, `From`/`Into` conversions. Leverage the type system to make invalid states unrepresentable.
+- **Test-driven.** Write failing tests before implementation. Every public function and every error path should be tested. Use inline `#[cfg(test)] mod tests`.
+- **Commit discipline.** Small, atomic commits. Describe what was done clearly — never reference phase numbers, milestone names, or plan sections in commit messages.
+
 ## Workspace Layout
 
 ```

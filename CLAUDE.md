@@ -6,7 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Rust port of `less-accounts` (Go) — an OPAQUE-based password authentication and OAuth 2.0 server for the Less platform. Follows the architecture established in `less-sync-rs`. Currently at scaffold phase (Phase 1 complete); all crates compile but contain empty stubs.
 
-See `PLAN.md` for the full implementation plan (Phases 1–10).
+See `PLAN.md` for the full implementation plan.
+
+## Porting Guidelines
+
+This is a **faithful port** of the Go `less-accounts` server. The Go source of truth lives at:
+`/Users/nchapman/Code/lessisbetter/less-platform/less-accounts`
+
+- **Always cross-reference the Go implementation** before writing or reviewing code. When in doubt, read the Go source. Don't take liberties — match behavior exactly.
+- **Use idiomatic Rust.** Newtypes, enums, `From`/`Into`, `thiserror`, exhaustive matches, builder patterns where appropriate. This should be a project Rustaceans admire.
+- **Test-driven development.** Write failing tests first, then implement. Every module should have thorough unit tests. Prefer `#[cfg(test)] mod tests` inline. Test edge cases, error paths, and empty inputs.
+- **Commit as you go.** Small, focused commits with clear descriptions of what was done. Never reference milestone names, phase numbers, or plan sections in commit messages.
 
 ## Commands
 
