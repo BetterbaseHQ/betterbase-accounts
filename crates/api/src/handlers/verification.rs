@@ -4,6 +4,7 @@ use axum::{extract::State, http::StatusCode, Json};
 use less_accounts_core::{
     email::{canonicalize_email, validate_email},
     protocol::*,
+    purpose,
     username::validate_username,
 };
 use less_accounts_storage::{AccountStorage, StorageError};
@@ -25,7 +26,7 @@ pub async fn handle_send_verification_code(
     validate_email(&req.email).map_err(|_| ApiError::bad_request("invalid email"))?;
 
     match req.purpose.as_str() {
-        "registration" => {
+        purpose::REGISTRATION => {
             validate_username(&req.username)
                 .map_err(|_| ApiError::bad_request("invalid username"))?;
 
@@ -51,7 +52,7 @@ pub async fn handle_send_verification_code(
             let _ = by_email;
             let _ = by_username;
 
-            verification::send_code(&state, &canonical_email, "registration")
+            verification::send_code(&state, &canonical_email, purpose::REGISTRATION)
                 .await
                 .map_err(|e| match e {
                     StorageError::VerificationRateLimited => {
@@ -60,11 +61,11 @@ pub async fn handle_send_verification_code(
                     _ => ApiError::from(e),
                 })?;
         }
-        "recovery" => {
+        purpose::RECOVERY => {
             let canonical_email = canonicalize_email(&req.email);
 
             // Anti-enumeration: silently succeed if no account
-            let result = verification::send_code(&state, &canonical_email, "recovery").await;
+            let result = verification::send_code(&state, &canonical_email, purpose::RECOVERY).await;
             match result {
                 Ok(()) => {}
                 Err(StorageError::VerificationRateLimited) => {
@@ -96,7 +97,7 @@ pub async fn handle_confirm_verification_code(
     }
 
     match req.purpose.as_str() {
-        "registration" | "recovery" => {}
+        purpose::REGISTRATION | purpose::RECOVERY => {}
         _ => return Err(ApiError::bad_request("invalid purpose")),
     }
 

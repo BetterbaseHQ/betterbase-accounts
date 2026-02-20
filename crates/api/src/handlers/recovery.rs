@@ -67,7 +67,7 @@ pub async fn handle_get_recovery_blob(
         .validate_verification_token(token)
         .map_err(|_| ApiError::not_found("not found"))?;
 
-    if claims.purpose != "recovery" {
+    if claims.purpose != less_accounts_core::purpose::RECOVERY {
         return Err(ApiError::not_found("not found"));
     }
 
@@ -112,7 +112,7 @@ pub async fn handle_recover_init(
             _ => ApiError::bad_request("invalid verification token"),
         })?;
 
-    if v_claims.purpose != "recovery" {
+    if v_claims.purpose != less_accounts_core::purpose::RECOVERY {
         return Err(ApiError::bad_request("invalid verification token purpose"));
     }
 
@@ -171,7 +171,6 @@ pub async fn handle_recover_init(
         id: state_id,
         account_id: account.id,
         username: account.username.clone(),
-        state: result.response.clone(),
         created_at: now,
         expires_at: now + chrono::Duration::seconds(60),
     };
@@ -201,22 +200,24 @@ pub async fn handle_recover_finalize(
     let state_id =
         Uuid::parse_str(&state_id_str).map_err(|_| ApiError::bad_request("invalid state token"))?;
 
-    let reg_state = state.storage.get_registration_state(state_id).await?;
+    // Atomically consume registration state (prevents replay)
+    let reg_state = state.storage.consume_registration_state(state_id).await?;
 
     let opaque_record = B64
         .decode(&req.opaque_record)
         .map_err(|_| ApiError::bad_request("invalid opaque_record encoding"))?;
 
-    let password_file = state
-        .opaque
-        .registration_finish(&opaque_record)
-        .map_err(|e| match e {
-            OpaqueError::InvalidRecord => ApiError::bad_request("invalid OPAQUE record"),
-            _ => {
-                tracing::error!("OPAQUE registration finish error: {e}");
-                ApiError::internal()
-            }
-        })?;
+    let opaque_record_final =
+        state
+            .opaque
+            .registration_finish(&opaque_record)
+            .map_err(|e| match e {
+                OpaqueError::InvalidRecord => ApiError::bad_request("invalid OPAQUE record"),
+                _ => {
+                    tracing::error!("OPAQUE registration finish error: {e}");
+                    ApiError::internal()
+                }
+            })?;
 
     // Optional new wrapped root key
     if !req.wrapped_root_key.is_empty() {
@@ -228,12 +229,12 @@ pub async fn handle_recover_finalize(
         }
         state
             .storage
-            .update_registration_and_root_key(reg_state.account_id, &password_file, &new_key)
+            .update_registration_and_root_key(reg_state.account_id, &opaque_record_final, &new_key)
             .await?;
     } else {
         state
             .storage
-            .update_registration(reg_state.account_id, &password_file)
+            .update_registration(reg_state.account_id, &opaque_record_final)
             .await?;
     }
 
@@ -244,8 +245,6 @@ pub async fn handle_recover_finalize(
             .store_recovery_blob(reg_state.account_id, req.new_blob.as_bytes())
             .await;
     }
-
-    let _ = state.storage.delete_registration_state(state_id).await;
 
     let auth_token = state
         .jwt

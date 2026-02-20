@@ -46,7 +46,7 @@ pub async fn handle_password_init(
             _ => ApiError::unauthorized("invalid verification token"),
         })?;
 
-    if v_claims.purpose != "registration"
+    if v_claims.purpose != less_accounts_core::purpose::REGISTRATION
         || v_claims.email.to_lowercase() != req.email.to_lowercase()
     {
         return Err(ApiError::unauthorized("invalid verification token"));
@@ -99,7 +99,6 @@ pub async fn handle_password_init(
         id: state_id,
         account_id: account.id,
         username: canonical_username,
-        state: result.response.clone(),
         created_at: now,
         expires_at: now + chrono::Duration::seconds(60),
     };
@@ -130,8 +129,8 @@ pub async fn handle_password_finalize(
     let state_id =
         Uuid::parse_str(&state_id_str).map_err(|_| ApiError::bad_request("invalid state token"))?;
 
-    // Load registration state
-    let reg_state = state.storage.get_registration_state(state_id).await?;
+    // Atomically consume registration state (prevents replay)
+    let reg_state = state.storage.consume_registration_state(state_id).await?;
 
     // Decode OPAQUE record
     let opaque_record = B64
@@ -146,28 +145,28 @@ pub async fn handle_password_finalize(
         return Err(ApiError::bad_request("wrapped_root_key must be 41 bytes"));
     }
 
-    // OPAQUE finalize
-    let password_file = state
-        .opaque
-        .registration_finish(&opaque_record)
-        .map_err(|e| match e {
-            OpaqueError::InvalidRecord => ApiError::bad_request("invalid OPAQUE record"),
-            _ => {
-                tracing::error!("OPAQUE registration finish error: {e}");
-                ApiError::internal()
-            }
-        })?;
+    // OPAQUE finalize — produces the registration record to store
+    let opaque_record_final =
+        state
+            .opaque
+            .registration_finish(&opaque_record)
+            .map_err(|e| match e {
+                OpaqueError::InvalidRecord => ApiError::bad_request("invalid OPAQUE record"),
+                _ => {
+                    tracing::error!("OPAQUE registration finish error: {e}");
+                    ApiError::internal()
+                }
+            })?;
 
-    // Persist + delete state
+    // Persist registration (state already consumed atomically above)
     state
         .storage
         .finalize_registration_with_root_key(
             reg_state.account_id,
-            &password_file,
+            &opaque_record_final,
             &wrapped_root_key,
         )
         .await?;
-    let _ = state.storage.delete_registration_state(state_id).await;
 
     let auth_token = state
         .jwt
@@ -213,8 +212,8 @@ pub async fn handle_login_init(
         .get_account_by_username(&state.config.issuer, &canonical_username)
         .await;
 
-    let (account_id, password_file_bytes): (Option<Uuid>, Option<Vec<u8>>) = match account {
-        Ok(a) => (Some(a.id), a.opaque_registration),
+    let (account_id, opaque_record_bytes): (Option<Uuid>, Option<Vec<u8>>) = match account {
+        Ok(a) => (Some(a.id), a.opaque_record),
         Err(StorageError::AccountNotFound) => (None, None),
         Err(e) => return Err(ApiError::from(e)),
     };
@@ -232,7 +231,7 @@ pub async fn handle_login_init(
 
     let result = state
         .opaque
-        .login_start(&ke1, password_file_bytes.as_deref(), &credential_id)
+        .login_start(&ke1, opaque_record_bytes.as_deref(), &credential_id)
         .map_err(|e| match e {
             OpaqueError::InvalidKE1 => ApiError::bad_request("invalid OPAQUE KE1"),
             _ => {
@@ -278,8 +277,8 @@ pub async fn handle_login_finalize(
     let state_id =
         Uuid::parse_str(&state_id_str).map_err(|_| ApiError::bad_request("invalid login token"))?;
 
-    // Load login state
-    let login_state = state.storage.get_login_state(state_id).await?;
+    // Atomically consume login state (prevents replay)
+    let login_state = state.storage.consume_login_state(state_id).await?;
 
     // Decode KE3
     let ke3 = B64
@@ -288,7 +287,6 @@ pub async fn handle_login_finalize(
 
     // OPAQUE finalize
     let result = state.opaque.login_finish(&ke3, &login_state.state);
-    let _ = state.storage.delete_login_state(state_id).await;
 
     match result {
         Ok(()) => {}

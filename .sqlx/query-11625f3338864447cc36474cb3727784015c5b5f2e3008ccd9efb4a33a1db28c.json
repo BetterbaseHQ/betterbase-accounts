@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO accounts (issuer, username, email)\n            VALUES ($1, $2, $3)\n            ON CONFLICT (issuer, username) DO UPDATE SET issuer = EXCLUDED.issuer\n            RETURNING id, issuer, username, email,\n                      opaque_registration, wrapped_root_key,\n                      created_at, updated_at\n            ",
+  "query": "\n            INSERT INTO accounts (issuer, username, email)\n            VALUES ($1, $2, $3)\n            ON CONFLICT (issuer, username) DO UPDATE SET issuer = EXCLUDED.issuer\n            RETURNING id, issuer, username, email,\n                      opaque_record, wrapped_root_key,\n                      created_at, updated_at\n            ",
   "describe": {
     "columns": [
       {
@@ -25,7 +25,7 @@
       },
       {
         "ordinal": 4,
-        "name": "opaque_registration",
+        "name": "opaque_record",
         "type_info": "Bytea"
       },
       {
@@ -62,5 +62,5 @@
       false
     ]
   },
-  "hash": "b199035c9039d89bd4091d1ce9bcd35aac8d2877572483a8046034df20448eba"
+  "hash": "11625f3338864447cc36474cb3727784015c5b5f2e3008ccd9efb4a33a1db28c"
 }

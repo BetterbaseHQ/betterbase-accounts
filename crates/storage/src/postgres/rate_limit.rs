@@ -1,24 +1,10 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use std::time::Duration;
-use uuid::Uuid;
 
 use crate::{RateLimitStorage, StorageError};
 
-use super::PostgresStorage;
-
-type HmacSha256 = Hmac<Sha256>;
-
-/// Compute a privacy-preserving HMAC-SHA256 of the email, then take the first 16 bytes as hex.
-/// This prevents storing plaintext emails in rate-limit tables while still deduplicating.
-fn rate_limit_key(email: &str, key: &[u8]) -> String {
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(email.as_bytes());
-    let result = mac.finalize().into_bytes();
-    hex::encode(&result[..16])
-}
+use super::{rate_limit_key, PostgresStorage};
 
 #[async_trait]
 impl RateLimitStorage for PostgresStorage {
@@ -143,9 +129,9 @@ impl RateLimitStorage for PostgresStorage {
 
         let row = sqlx::query!(
             r#"
-            INSERT INTO recovery_requests (email, request_count, window_start)
+            INSERT INTO recovery_requests (identity_key, request_count, window_start)
             VALUES ($1, 1, NOW())
-            ON CONFLICT (email) DO UPDATE
+            ON CONFLICT (identity_key) DO UPDATE
             SET request_count = CASE
                 WHEN EXTRACT(EPOCH FROM (NOW() - recovery_requests.window_start))::bigint >= $2
                      THEN 1
@@ -166,50 +152,7 @@ impl RateLimitStorage for PostgresStorage {
         .map_err(StorageError::from)?;
 
         if row.request_count > max_requests {
-            sqlx::query!(
-                "UPDATE recovery_requests SET request_count = request_count - 1 WHERE email = $1",
-                key,
-            )
-            .execute(&self.pool)
-            .await
-            .map_err(StorageError::from)?;
             return Err(StorageError::RecoveryRateLimited);
-        }
-        Ok(())
-    }
-
-    async fn record_used_refresh_token(
-        &self,
-        token_hash: &[u8],
-        grant_id: Uuid,
-    ) -> Result<(), StorageError> {
-        sqlx::query!(
-            r#"
-            INSERT INTO used_refresh_tokens (token_hash, grant_id)
-            VALUES ($1, $2)
-            ON CONFLICT DO NOTHING
-            "#,
-            token_hash,
-            grant_id,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(StorageError::from)?;
-        Ok(())
-    }
-
-    async fn check_refresh_token_reused(&self, token_hash: &[u8]) -> Result<(), StorageError> {
-        let exists = sqlx::query_scalar!(
-            "SELECT EXISTS(SELECT 1 FROM used_refresh_tokens WHERE token_hash = $1)",
-            token_hash,
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(StorageError::from)?
-        .unwrap_or(false);
-
-        if exists {
-            return Err(StorageError::RefreshTokenReused);
         }
         Ok(())
     }

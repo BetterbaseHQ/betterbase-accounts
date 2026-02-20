@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE accounts\n            SET opaque_record = $2, wrapped_root_key = $3\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "31d868f69bb29c2cb56b2adaffb328d2f1aa88ea1867516e52612b88cf67e7c0"
+}

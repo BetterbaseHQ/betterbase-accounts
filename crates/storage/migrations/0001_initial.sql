@@ -17,7 +17,7 @@ CREATE TABLE accounts (
     issuer       TEXT NOT NULL,
     username     TEXT NOT NULL,
     email        TEXT NOT NULL,
-    opaque_registration  BYTEA,
+    opaque_record  BYTEA,
     wrapped_root_key     BYTEA,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -30,11 +30,11 @@ CREATE TRIGGER trg_accounts_updated_at
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Registration states (60s TTL)
+-- No server-side state is needed between OPAQUE registration rounds (stateless finish).
 CREATE TABLE registration_states (
     id          UUID PRIMARY KEY,
     account_id  UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     username    TEXT NOT NULL,
-    state       BYTEA NOT NULL,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at  TIMESTAMPTZ NOT NULL
 );
@@ -179,9 +179,9 @@ CREATE TABLE email_verification_codes (
 CREATE INDEX idx_email_verification_codes_email_purpose ON email_verification_codes(email, purpose);
 CREATE INDEX idx_email_verification_codes_expires       ON email_verification_codes(expires_at);
 
--- Email verification send-rate limits
+-- Email verification send-rate limits (identity_key = HMAC-hashed email)
 CREATE TABLE email_verification_rate_limits (
-    email        TEXT PRIMARY KEY,
+    identity_key TEXT PRIMARY KEY,
     send_count   INT          NOT NULL DEFAULT 0,
     window_start TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -207,9 +207,9 @@ CREATE TABLE login_attempts (
 CREATE INDEX idx_login_attempts_locked ON login_attempts(locked_until)
     WHERE locked_until IS NOT NULL;
 
--- Recovery initiation rate limiting
+-- Recovery initiation rate limiting (identity_key = HMAC-hashed email)
 CREATE TABLE recovery_requests (
-    email        TEXT PRIMARY KEY,
+    identity_key  TEXT PRIMARY KEY,
     request_count INT          NOT NULL DEFAULT 0,
     window_start  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

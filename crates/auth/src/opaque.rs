@@ -94,28 +94,28 @@ impl OpaqueService {
 
     /// Finalize server-side OPAQUE registration.
     ///
-    /// Returns the serialized `ServerRegistration` (password file) to store in the DB.
+    /// Returns the serialized registration record to store in the DB.
     pub fn registration_finish(&self, upload_bytes: &[u8]) -> Result<Vec<u8>, OpaqueError> {
         let upload = RegistrationUpload::<DefaultCipherSuite>::deserialize(upload_bytes)
             .map_err(|_| OpaqueError::InvalidRecord)?;
 
-        let password_file = ServerRegistration::<DefaultCipherSuite>::finish(upload);
-        Ok(password_file.serialize().to_vec())
+        let record = ServerRegistration::<DefaultCipherSuite>::finish(upload);
+        Ok(record.serialize().to_vec())
     }
 
     /// Start server-side OPAQUE login.
     ///
-    /// If `password_file_bytes` is `None`, a fake login response is generated
+    /// If `record_bytes` is `None`, a fake login response is generated
     /// (anti-enumeration).
     pub fn login_start(
         &self,
         ke1_bytes: &[u8],
-        password_file_bytes: Option<&[u8]>,
+        record_bytes: Option<&[u8]>,
         credential_id: &[u8],
     ) -> Result<LoginStartResult, OpaqueError> {
         let mut rng = OsRng;
 
-        let password_file = password_file_bytes
+        let password_file = record_bytes
             .map(|b| {
                 ServerRegistration::<DefaultCipherSuite>::deserialize(b)
                     .map_err(|_| OpaqueError::InvalidRecord)
@@ -242,8 +242,8 @@ mod tests {
     fn registration_round_trip() {
         let hex = OpaqueService::generate_server_setup_hex();
         let service = OpaqueService::from_hex(&hex).unwrap();
-        let password_file = full_registration(&service, b"hunter2", b"test-user-id");
-        assert!(!password_file.is_empty());
+        let record = full_registration(&service, b"hunter2", b"test-user-id");
+        assert!(!record.is_empty());
     }
 
     #[test]
@@ -253,7 +253,7 @@ mod tests {
         let credential_id = b"test-user-id";
         let password = b"hunter2";
 
-        let password_file = full_registration(&service, password, credential_id);
+        let record = full_registration(&service, password, credential_id);
 
         let mut rng = OsRng;
 
@@ -264,7 +264,7 @@ mod tests {
 
         // Server login start
         let server_result = service
-            .login_start(&ke1_bytes, Some(&password_file), credential_id)
+            .login_start(&ke1_bytes, Some(&record), credential_id)
             .unwrap();
 
         // Client login finish

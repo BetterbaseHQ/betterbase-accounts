@@ -16,7 +16,21 @@ mod registration;
 mod user_keys;
 mod verification;
 
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use sqlx::PgPool;
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Compute a privacy-preserving HMAC-SHA256 of an identifier (email, etc.),
+/// then take the first 16 bytes as hex. Prevents storing plaintext PII in
+/// rate-limit tables while still deduplicating.
+fn rate_limit_key(identifier: &str, key: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(identifier.as_bytes());
+    let result = mac.finalize().into_bytes();
+    hex::encode(&result[..16])
+}
 
 /// PostgreSQL-backed storage implementation.
 ///

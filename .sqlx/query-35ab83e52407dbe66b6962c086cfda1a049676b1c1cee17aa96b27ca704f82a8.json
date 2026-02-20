@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, account_id, username, state, created_at, expires_at\n            FROM registration_states\n            WHERE id = $1\n            ",
+  "query": "\n            DELETE FROM login_states\n            WHERE id = $1\n            RETURNING id, account_id, username, state, created_at, expires_at\n            ",
   "describe": {
     "columns": [
       {
@@ -41,12 +41,12 @@
     },
     "nullable": [
       false,
-      false,
+      true,
       false,
       false,
       false,
       false
     ]
   },
-  "hash": "0a9a55dc9b45ca6dab1a50f4b8313423f1f301e68576a2c66b5429580a291bab"
+  "hash": "35ab83e52407dbe66b6962c086cfda1a049676b1c1cee17aa96b27ca704f82a8"
 }

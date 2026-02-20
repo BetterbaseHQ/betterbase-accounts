@@ -71,11 +71,27 @@ impl LoginStateStorage for PostgresStorage {
         Ok(row.into())
     }
 
-    async fn delete_login_state(&self, id: Uuid) -> Result<(), StorageError> {
-        sqlx::query!("DELETE FROM login_states WHERE id = $1", id)
-            .execute(&self.pool)
-            .await
-            .map_err(StorageError::from)?;
-        Ok(())
+    async fn consume_login_state(&self, id: Uuid) -> Result<LoginState, StorageError> {
+        // Atomically delete + return. Expired states are also deleted here
+        // (not left for cleanup) so they cannot be replayed.
+        let now = Utc::now();
+        let row = sqlx::query_as!(
+            LoginStateRow,
+            r#"
+            DELETE FROM login_states
+            WHERE id = $1
+            RETURNING id, account_id, username, state, created_at, expires_at
+            "#,
+            id,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StorageError::from)?
+        .ok_or(StorageError::StateNotFound)?;
+
+        if row.expires_at < now {
+            return Err(StorageError::StateExpired);
+        }
+        Ok(row.into())
     }
 }

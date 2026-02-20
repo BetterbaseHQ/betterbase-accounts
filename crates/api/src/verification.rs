@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use less_accounts_email::VerificationEmail;
 use less_accounts_storage::{StorageError, VerificationCode, VerificationStorage};
-use rand::Rng;
+use rand::{rngs::OsRng, Rng};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -19,7 +19,7 @@ pub const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(3600); // 1 hour
 
 /// Generate a cryptographically random 6-digit verification code.
 fn generate_code() -> String {
-    let n: u32 = rand::thread_rng().gen_range(0..1_000_000);
+    let n: u32 = OsRng.gen_range(0..1_000_000);
     format!("{n:06}")
 }
 

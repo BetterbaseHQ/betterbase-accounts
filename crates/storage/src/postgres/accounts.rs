@@ -11,7 +11,7 @@ struct AccountRow {
     issuer: String,
     username: String,
     email: String,
-    opaque_registration: Option<Vec<u8>>,
+    opaque_record: Option<Vec<u8>>,
     wrapped_root_key: Option<Vec<u8>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -24,7 +24,7 @@ impl From<AccountRow> for Account {
             issuer: r.issuer,
             username: r.username,
             email: r.email,
-            opaque_registration: r.opaque_registration,
+            opaque_record: r.opaque_record,
             wrapped_root_key: r.wrapped_root_key,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -47,7 +47,7 @@ impl AccountStorage for PostgresStorage {
             VALUES ($1, $2, $3)
             ON CONFLICT (issuer, username) DO UPDATE SET issuer = EXCLUDED.issuer
             RETURNING id, issuer, username, email,
-                      opaque_registration, wrapped_root_key,
+                      opaque_record, wrapped_root_key,
                       created_at, updated_at
             "#,
             issuer,
@@ -66,7 +66,7 @@ impl AccountStorage for PostgresStorage {
             AccountRow,
             r#"
             SELECT id, issuer, username, email,
-                   opaque_registration, wrapped_root_key,
+                   opaque_record, wrapped_root_key,
                    created_at, updated_at
             FROM accounts WHERE id = $1
             "#,
@@ -89,7 +89,7 @@ impl AccountStorage for PostgresStorage {
             AccountRow,
             r#"
             SELECT id, issuer, username, email,
-                   opaque_registration, wrapped_root_key,
+                   opaque_record, wrapped_root_key,
                    created_at, updated_at
             FROM accounts WHERE issuer = $1 AND username = $2
             "#,
@@ -113,7 +113,7 @@ impl AccountStorage for PostgresStorage {
             AccountRow,
             r#"
             SELECT id, issuer, username, email,
-                   opaque_registration, wrapped_root_key,
+                   opaque_record, wrapped_root_key,
                    created_at, updated_at
             FROM accounts WHERE issuer = $1 AND email = $2
             "#,
@@ -136,7 +136,7 @@ impl AccountStorage for PostgresStorage {
         let rows = sqlx::query!(
             r#"
             UPDATE accounts
-            SET opaque_registration = $2
+            SET opaque_record = $2
             WHERE id = $1
             "#,
             account_id,
@@ -161,7 +161,7 @@ impl AccountStorage for PostgresStorage {
         let rows = sqlx::query!(
             r#"
             UPDATE accounts
-            SET opaque_registration = $2, wrapped_root_key = $3
+            SET opaque_record = $2, wrapped_root_key = $3
             WHERE id = $1
             "#,
             account_id,
@@ -186,7 +186,7 @@ impl AccountStorage for PostgresStorage {
         let rows = sqlx::query!(
             r#"
             UPDATE accounts
-            SET opaque_registration = $2
+            SET opaque_record = $2
             WHERE id = $1
             "#,
             account_id,

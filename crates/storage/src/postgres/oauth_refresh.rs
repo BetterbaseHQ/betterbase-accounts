@@ -6,6 +6,14 @@ use crate::{OAuthRefreshToken, OAuthRefreshTokenStorage, StorageError};
 
 use super::PostgresStorage;
 
+/// Check if a sqlx error is a PostgreSQL unique constraint violation (23505).
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    if let sqlx::Error::Database(db_err) = e {
+        return db_err.code().as_deref() == Some("23505");
+    }
+    false
+}
+
 struct OAuthRefreshTokenRow {
     id: Uuid,
     grant_id: Uuid,
@@ -107,19 +115,35 @@ impl OAuthRefreshTokenStorage for PostgresStorage {
         .await
         .map_err(StorageError::from)?;
 
-        // Record the old token hash in used_refresh_tokens (reuse detection)
-        sqlx::query!(
+        // Record the old token hash — plain INSERT (no ON CONFLICT) so a
+        // duplicate key violation signals reuse within this transaction.
+        let insert_result = sqlx::query!(
             r#"
             INSERT INTO used_refresh_tokens (token_hash, grant_id)
             VALUES ($1, $2)
-            ON CONFLICT DO NOTHING
             "#,
             old_token_hash,
             grant_id,
         )
         .execute(&mut *tx)
-        .await
-        .map_err(StorageError::from)?;
+        .await;
+
+        if let Err(e) = insert_result {
+            if is_unique_violation(&e) {
+                // Reuse detected — revoke all refresh tokens for this grant
+                // within the same transaction, then abort cleanly.
+                sqlx::query!(
+                    "DELETE FROM oauth_refresh_tokens WHERE grant_id = $1",
+                    grant_id,
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(StorageError::from)?;
+                tx.commit().await.map_err(StorageError::from)?;
+                return Err(StorageError::RefreshTokenReused { grant_id });
+            }
+            return Err(StorageError::from(e));
+        }
 
         // Insert new token
         sqlx::query!(

@@ -142,6 +142,12 @@ pub async fn handle_rotate_root_key(
         let grant_id = Uuid::parse_str(&update.grant_id)
             .map_err(|_| ApiError::bad_request("invalid grant_id"))?;
 
+        // Verify ownership — prevent IDOR attacks
+        let grant = state.storage.get_oauth_grant(grant_id).await?;
+        if grant.account_id != auth_ctx.account_id {
+            return Err(ApiError::forbidden("grant does not belong to this account"));
+        }
+
         let key = B64
             .decode(&update.wrapped_scoped_key)
             .map_err(|_| ApiError::bad_request("invalid wrapped_scoped_key encoding"))?;

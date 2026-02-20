@@ -48,6 +48,7 @@ pub struct Jwk {
     pub crv: String,
     pub x: String,
     pub y: String,
+    #[serde(rename = "use")]
     pub use_: Option<String>,
     pub kid: String,
     pub alg: String,

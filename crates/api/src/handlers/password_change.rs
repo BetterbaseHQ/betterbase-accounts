@@ -22,10 +22,10 @@ pub async fn handle_password_change_init(
 ) -> Result<Json<PasswordChangeInitResponse>, ApiError> {
     let auth_ctx = extract_auth(&state, &headers)?;
 
-    // Load account to get existing OPAQUE registration
+    // Load account to get existing OPAQUE record
     let account = state.storage.get_account_by_id(auth_ctx.account_id).await?;
-    let password_file = account
-        .opaque_registration
+    let existing_record = account
+        .opaque_record
         .ok_or_else(|| ApiError::bad_request("account not registered"))?;
 
     let ke1 = B64
@@ -35,7 +35,7 @@ pub async fn handle_password_change_init(
     let credential_id = account.id.as_bytes().to_vec();
     let result = state
         .opaque
-        .login_start(&ke1, Some(&password_file), &credential_id)
+        .login_start(&ke1, Some(&existing_record), &credential_id)
         .map_err(|e| match e {
             OpaqueError::InvalidKE1 => ApiError::bad_request("invalid OPAQUE KE1"),
             _ => {
@@ -85,7 +85,8 @@ pub async fn handle_password_change_verify(
     let state_id =
         Uuid::parse_str(&state_id_str).map_err(|_| ApiError::bad_request("invalid login token"))?;
 
-    let login_state = state.storage.get_login_state(state_id).await?;
+    // Atomically consume login state (prevents replay)
+    let login_state = state.storage.consume_login_state(state_id).await?;
 
     // Verify this login state belongs to the authenticated account
     if login_state.account_id != Some(auth_ctx.account_id) {
@@ -103,8 +104,6 @@ pub async fn handle_password_change_verify(
         .opaque
         .login_finish(&ke3, &login_state.state)
         .map_err(|_| ApiError::unauthorized("old password verification failed"))?;
-
-    let _ = state.storage.delete_login_state(state_id).await;
 
     // Start registration for new password
     let new_opaque_bytes = B64
@@ -129,7 +128,6 @@ pub async fn handle_password_change_verify(
         id: new_state_id,
         account_id: auth_ctx.account_id,
         username: login_state.username,
-        state: reg_result.response.clone(),
         created_at: now,
         expires_at: now + chrono::Duration::seconds(60),
     };
@@ -163,7 +161,8 @@ pub async fn handle_password_change_complete(
     let state_id =
         Uuid::parse_str(&state_id_str).map_err(|_| ApiError::bad_request("invalid state token"))?;
 
-    let reg_state = state.storage.get_registration_state(state_id).await?;
+    // Atomically consume registration state (prevents replay)
+    let reg_state = state.storage.consume_registration_state(state_id).await?;
 
     // Verify ownership
     if reg_state.account_id != auth_ctx.account_id {
@@ -181,23 +180,27 @@ pub async fn handle_password_change_complete(
         return Err(ApiError::bad_request("wrapped_root_key must be 41 bytes"));
     }
 
-    let password_file = state
-        .opaque
-        .registration_finish(&opaque_record)
-        .map_err(|e| match e {
-            OpaqueError::InvalidRecord => ApiError::bad_request("invalid OPAQUE record"),
-            _ => {
-                tracing::error!("OPAQUE registration finish error: {e}");
-                ApiError::internal()
-            }
-        })?;
+    let opaque_record_final =
+        state
+            .opaque
+            .registration_finish(&opaque_record)
+            .map_err(|e| match e {
+                OpaqueError::InvalidRecord => ApiError::bad_request("invalid OPAQUE record"),
+                _ => {
+                    tracing::error!("OPAQUE registration finish error: {e}");
+                    ApiError::internal()
+                }
+            })?;
 
+    // State already consumed atomically above
     state
         .storage
-        .update_registration_and_root_key(reg_state.account_id, &password_file, &wrapped_root_key)
+        .update_registration_and_root_key(
+            reg_state.account_id,
+            &opaque_record_final,
+            &wrapped_root_key,
+        )
         .await?;
-
-    let _ = state.storage.delete_registration_state(state_id).await;
 
     let new_auth_token = state
         .jwt

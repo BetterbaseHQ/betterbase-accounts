@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO used_refresh_tokens (token_hash, grant_id)\n            VALUES ($1, $2)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b0a5af7fd7137cd67492b25ba0e5bb442071240a458952623ca9b2d8117d4662"
+}

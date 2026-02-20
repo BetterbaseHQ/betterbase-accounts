@@ -13,6 +13,7 @@ use base64::{
     engine::general_purpose::STANDARD as B64, engine::general_purpose::URL_SAFE_NO_PAD as B64URL,
     Engine as _,
 };
+use p256::elliptic_curve::sec1::{FromEncodedPoint as _, ToEncodedPoint as _};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -26,7 +27,7 @@ use less_accounts_core::{
 use less_accounts_storage::{
     AccountStorage, OAuthClient, OAuthClientStorage, OAuthCode, OAuthCodeStorage, OAuthGrant,
     OAuthGrantStorage, OAuthRefreshToken, OAuthRefreshTokenStorage, OAuthSigningKeyStorage,
-    RateLimitStorage, StorageError,
+    StorageError,
 };
 use subtle::ConstantTimeEq as _;
 
@@ -198,18 +199,15 @@ pub async fn handle_oauth_authorize(
     };
 
     // Create OAuth state JWT
-    let now = chrono::Utc::now();
-    let oauth_state_claims = OAuthStateClaims {
-        client_id: client_id_str.clone(),
-        redirect_uri: redirect_uri.clone(),
-        scope: scope.to_string(),
-        state: client_state,
+    let oauth_state_claims = OAuthStateClaims::new(
+        client_id_str.clone(),
+        redirect_uri.clone(),
+        scope.to_string(),
+        client_state,
         code_challenge,
-        code_challenge_method: "S256".to_string(),
+        "S256".to_string(),
         keys_jwk,
-        exp: (now + chrono::Duration::minutes(10)).timestamp(),
-        iat: now.timestamp(),
-    };
+    );
 
     let state_token = match state.jwt.create_oauth_state_token(oauth_state_claims) {
         Ok(t) => t,
@@ -444,10 +442,50 @@ pub struct TokenForm {
 }
 
 /// POST /oauth/token
+///
+/// Per RFC 6749 §4.1.3, the token endpoint MUST accept `application/x-www-form-urlencoded`.
+/// We also accept `application/json` for compatibility with our TypeScript client.
 pub async fn handle_oauth_token(
     State(state): State<AppState>,
-    Json(req): Json<TokenForm>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> Response {
+    let req: TokenForm = {
+        let content_type = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        if content_type.starts_with("application/x-www-form-urlencoded") {
+            match serde_urlencoded::from_bytes(&body) {
+                Ok(f) => f,
+                Err(_) => {
+                    return write_oauth_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request",
+                        "invalid form body",
+                    );
+                }
+            }
+        } else if content_type.starts_with("application/json") || content_type.is_empty() {
+            match serde_json::from_slice(&body) {
+                Ok(f) => f,
+                Err(_) => {
+                    return write_oauth_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request",
+                        "invalid request body",
+                    );
+                }
+            }
+        } else {
+            return write_oauth_error(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "invalid_request",
+                "unsupported Content-Type; use application/x-www-form-urlencoded",
+            );
+        }
+    };
     match req.grant_type.as_str() {
         "authorization_code" => handle_authorization_code_grant(&state, req).await,
         "refresh_token" => handle_refresh_token_grant(&state, req).await,
@@ -622,17 +660,10 @@ async fn handle_refresh_token_grant(state: &AppState, req: TokenForm) -> Respons
 
     let token_hash = sha256_hash(req.refresh_token.as_bytes());
 
-    // Check if token was previously used (rotation reuse detection)
-    if let Err(StorageError::RefreshTokenReused) =
-        state.storage.check_refresh_token_reused(&token_hash).await
-    {
-        return write_oauth_error(
-            StatusCode::UNAUTHORIZED,
-            "invalid_grant",
-            "refresh token reuse detected",
-        );
-    }
-
+    // Look up the active refresh token. Previously-used tokens will not be
+    // found here (they were deleted by rotate_refresh_token). Reuse of a
+    // token that races with a concurrent rotation is caught atomically by
+    // the unique constraint inside rotate_refresh_token below.
     let old_token = match state.storage.get_refresh_token_by_hash(&token_hash).await {
         Ok(t) => t,
         Err(StorageError::RefreshTokenNotFound | StorageError::RefreshTokenExpired) => {
@@ -688,21 +719,27 @@ async fn handle_refresh_token_grant(state: &AppState, req: TokenForm) -> Respons
         Err(e) => return e.into_response(),
     };
 
-    // Rotate refresh token
+    // Rotate refresh token (atomically: delete old, record as used, create new).
+    // If a concurrent request already used this token, rotate_refresh_token
+    // detects the unique constraint violation, revokes the grant's tokens
+    // inside the transaction, and returns RefreshTokenReused.
     let (new_raw, new_record) = new_refresh_token(grant.id);
-    if let Err(e) = state
+    match state
         .storage
         .rotate_refresh_token(old_token.id, &token_hash, grant.id, &new_record)
         .await
     {
-        return ApiError::from(e).into_response();
+        Ok(()) => {}
+        Err(StorageError::RefreshTokenReused { grant_id }) => {
+            tracing::warn!(grant_id = %grant_id, "refresh token reuse detected during rotation, grant tokens revoked");
+            return write_oauth_error(
+                StatusCode::UNAUTHORIZED,
+                "invalid_grant",
+                "refresh token reuse detected",
+            );
+        }
+        Err(e) => return ApiError::from(e).into_response(),
     }
-
-    // Record old token as used
-    let _ = state
-        .storage
-        .record_used_refresh_token(&token_hash, grant.id)
-        .await;
 
     let _ = state.storage.update_grant_last_used(grant.id).await;
 
@@ -1000,37 +1037,52 @@ fn validate_scopes_against_client(scope: &str, client: &OAuthClient) -> Result<(
 }
 
 /// Validate that a JWK value is a P-256 public key (no private key fields).
+/// Verifies the point is actually on the P-256 curve (prevents invalid-curve attacks).
 /// Returns the canonical form on success.
 fn validate_p256_public_key(jwk: &serde_json::Value) -> Result<serde_json::Value, String> {
     let kty = jwk.get("kty").and_then(|v| v.as_str());
     let crv = jwk.get("crv").and_then(|v| v.as_str());
-    let x = jwk.get("x").and_then(|v| v.as_str());
-    let y = jwk.get("y").and_then(|v| v.as_str());
+    let x_str = jwk.get("x").and_then(|v| v.as_str());
+    let y_str = jwk.get("y").and_then(|v| v.as_str());
 
     if kty != Some("EC") || crv != Some("P-256") {
         return Err("must be EC P-256".into());
     }
-    if x.is_none() || y.is_none() {
-        return Err("missing x or y".into());
-    }
+    let (x_str, y_str) = match (x_str, y_str) {
+        (Some(x), Some(y)) => (x, y),
+        _ => return Err("missing x or y".into()),
+    };
     // No private key
     if jwk.get("d").is_some() {
         return Err("private key not allowed".into());
     }
 
-    // Validate base64url encoding
-    B64URL
-        .decode(x.unwrap())
-        .map_err(|_| "invalid x".to_string())?;
-    B64URL
-        .decode(y.unwrap())
-        .map_err(|_| "invalid y".to_string())?;
+    // Decode coordinates
+    let x_bytes = B64URL.decode(x_str).map_err(|_| "invalid x".to_string())?;
+    let y_bytes = B64URL.decode(y_str).map_err(|_| "invalid y".to_string())?;
+
+    // Verify point is on the P-256 curve
+    let x_field =
+        p256::FieldBytes::from_exact_iter(x_bytes.iter().copied()).ok_or("x must be 32 bytes")?;
+    let y_field =
+        p256::FieldBytes::from_exact_iter(y_bytes.iter().copied()).ok_or("y must be 32 bytes")?;
+    let encoded_point =
+        p256::EncodedPoint::from_affine_coordinates(&x_field, &y_field, /* compress */ false);
+    let affine: p256::AffinePoint =
+        Option::from(p256::AffinePoint::from_encoded_point(&encoded_point))
+            .ok_or("point is not on P-256 curve")?;
+
+    // Re-encode from validated point for canonical output (ensures consistent
+    // base64url encoding for thumbprint computation)
+    let validated = affine.to_encoded_point(false);
+    let x_canonical = B64URL.encode(validated.x().expect("affine point has x"));
+    let y_canonical = B64URL.encode(validated.y().expect("affine point has y"));
 
     Ok(serde_json::json!({
         "kty": "EC",
         "crv": "P-256",
-        "x": x.unwrap(),
-        "y": y.unwrap()
+        "x": x_canonical,
+        "y": y_canonical
     }))
 }
 

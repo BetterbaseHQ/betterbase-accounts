@@ -37,7 +37,10 @@ pub enum StorageError {
     #[error("refresh token expired")]
     RefreshTokenExpired,
     #[error("refresh token reused")]
-    RefreshTokenReused,
+    RefreshTokenReused {
+        /// The grant whose tokens should be revoked.
+        grant_id: Uuid,
+    },
     #[error("invalid redirect URI")]
     InvalidRedirectURI,
     #[error("recovery blob not found")]
@@ -72,8 +75,8 @@ pub struct Account {
     pub issuer: String,
     pub username: String,
     pub email: String,
-    /// OPAQUE password file bytes (None if not yet registered)
-    pub opaque_registration: Option<Vec<u8>>,
+    /// OPAQUE registration record bytes (None if not yet registered)
+    pub opaque_record: Option<Vec<u8>>,
     /// AES-KW wrapped root key (None if not set)
     pub wrapped_root_key: Option<Vec<u8>>,
     pub created_at: DateTime<Utc>,
@@ -85,8 +88,6 @@ pub struct RegistrationState {
     pub id: Uuid,
     pub account_id: Uuid,
     pub username: String,
-    /// Serialized opaque-ke server registration state bytes
-    pub state: Vec<u8>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
 }
@@ -263,14 +264,17 @@ pub trait RegistrationStateStorage: Send + Sync {
         state: &RegistrationState,
     ) -> Result<(), StorageError>;
     async fn get_registration_state(&self, id: Uuid) -> Result<RegistrationState, StorageError>;
-    async fn delete_registration_state(&self, id: Uuid) -> Result<(), StorageError>;
+    /// Atomically get and delete the registration state (prevents TOCTOU replay).
+    async fn consume_registration_state(&self, id: Uuid)
+        -> Result<RegistrationState, StorageError>;
 }
 
 #[async_trait]
 pub trait LoginStateStorage: Send + Sync {
     async fn create_login_state(&self, state: &LoginState) -> Result<(), StorageError>;
     async fn get_login_state(&self, id: Uuid) -> Result<LoginState, StorageError>;
-    async fn delete_login_state(&self, id: Uuid) -> Result<(), StorageError>;
+    /// Atomically get and delete the login state (prevents TOCTOU replay).
+    async fn consume_login_state(&self, id: Uuid) -> Result<LoginState, StorageError>;
 }
 
 #[async_trait]
@@ -451,13 +455,6 @@ pub trait RateLimitStorage: Send + Sync {
         window: Duration,
         identity_hash_key: &[u8],
     ) -> Result<(), StorageError>;
-    async fn record_used_refresh_token(
-        &self,
-        token_hash: &[u8],
-        grant_id: Uuid,
-    ) -> Result<(), StorageError>;
-    /// Returns `Err(RefreshTokenReused)` if already used.
-    async fn check_refresh_token_reused(&self, token_hash: &[u8]) -> Result<(), StorageError>;
 }
 
 #[async_trait]

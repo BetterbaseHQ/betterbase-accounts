@@ -75,7 +75,7 @@ impl From<StorageError> for ApiError {
             StorageError::RefreshTokenNotFound | StorageError::RefreshTokenExpired => {
                 ApiError::bad_request("invalid or expired refresh token")
             }
-            StorageError::RefreshTokenReused => {
+            StorageError::RefreshTokenReused { .. } => {
                 ApiError::unauthorized("refresh token reuse detected")
             }
             StorageError::RecoveryBlobNotFound => ApiError::not_found("not found"),

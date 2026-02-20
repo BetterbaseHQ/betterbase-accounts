@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                g.id            AS grant_id,\n                g.client_id,\n                g.account_id,\n                g.scope,\n                g.keys_jwk_thumbprint,\n                g.app_public_key,\n                g.app_keypair_blob,\n                g.wrapped_scoped_key,\n                g.mailbox_id,\n                g.created_at    AS grant_created_at,\n                g.updated_at    AS grant_updated_at,\n                g.last_used_at,\n                a.id            AS acc_id,\n                a.issuer,\n                a.username,\n                a.email,\n                a.opaque_registration,\n                a.wrapped_root_key,\n                a.created_at    AS acc_created_at,\n                a.updated_at    AS acc_updated_at\n            FROM oauth_grants g\n            JOIN accounts a ON a.id = g.account_id\n            WHERE g.keys_jwk_thumbprint = $1\n            ",
+  "query": "\n            SELECT\n                g.id            AS grant_id,\n                g.client_id,\n                g.account_id,\n                g.scope,\n                g.keys_jwk_thumbprint,\n                g.app_public_key,\n                g.app_keypair_blob,\n                g.wrapped_scoped_key,\n                g.mailbox_id,\n                g.created_at    AS grant_created_at,\n                g.updated_at    AS grant_updated_at,\n                g.last_used_at,\n                a.id            AS acc_id,\n                a.issuer,\n                a.username,\n                a.email,\n                a.opaque_record,\n                a.wrapped_root_key,\n                a.created_at    AS acc_created_at,\n                a.updated_at    AS acc_updated_at\n            FROM oauth_grants g\n            JOIN accounts a ON a.id = g.account_id\n            WHERE g.keys_jwk_thumbprint = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -85,7 +85,7 @@
       },
       {
         "ordinal": 16,
-        "name": "opaque_registration",
+        "name": "opaque_record",
         "type_info": "Bytea"
       },
       {
@@ -132,5 +132,5 @@
       false
     ]
   },
-  "hash": "634536b4d13d2315c461068ef7101af62730114478bf05d864f6cc4e29e57a93"
+  "hash": "0b6b1ca525969b6c7714e9543bea8ff399e1cc685e2b01369a10ecbefbd11134"
 }

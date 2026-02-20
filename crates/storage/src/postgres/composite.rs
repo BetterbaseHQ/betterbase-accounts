@@ -18,7 +18,7 @@ impl CompositeStorage for PostgresStorage {
         let rows = sqlx::query!(
             r#"
             UPDATE accounts
-            SET opaque_registration = $2, wrapped_root_key = $3
+            SET opaque_record = $2, wrapped_root_key = $3
             WHERE id = $1
             "#,
             account_id,

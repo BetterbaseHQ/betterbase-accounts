@@ -41,12 +41,22 @@ impl From<jsonwebtoken::errors::Error> for JwtError {
     }
 }
 
+// ─── Token type discriminators (prevents HS256 token confusion) ──────────────
+
+const TYP_AUTH: &str = "auth";
+const TYP_STATE: &str = "state";
+const TYP_OAUTH_STATE: &str = "oauth-state";
+const TYP_VERIFICATION: &str = "verification";
+
 // ─── Claims ──────────────────────────────────────────────────────────────────
 
 /// Auth token claims — HS256, 14-day lifetime.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthClaims {
     pub sub: String,
+    /// Token type discriminator — prevents cross-type confusion.
+    #[doc(hidden)]
+    pub typ: String,
     pub exp: i64,
     pub iat: i64,
 }
@@ -56,6 +66,9 @@ pub struct AuthClaims {
 pub struct StateClaims {
     /// UUID of the registration or login state record.
     pub sub: String,
+    /// Token type discriminator — prevents cross-type confusion.
+    #[doc(hidden)]
+    pub typ: String,
     pub exp: i64,
     pub iat: i64,
 }
@@ -80,6 +93,9 @@ pub struct OAuthAccessClaims {
 /// OAuth state token claims — HS256, 10-minute lifetime.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OAuthStateClaims {
+    /// Token type discriminator — prevents cross-type confusion.
+    #[doc(hidden)]
+    pub typ: String,
     pub client_id: String,
     pub redirect_uri: String,
     pub scope: String,
@@ -96,6 +112,9 @@ pub struct OAuthStateClaims {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VerificationClaims {
     pub sub: String,
+    /// Token type discriminator — prevents cross-type confusion.
+    #[doc(hidden)]
+    pub typ: String,
     pub email: String,
     pub purpose: String,
     pub jti: String,
@@ -164,6 +183,7 @@ impl JwtService {
         let now = Utc::now();
         let claims = AuthClaims {
             sub: account_id.to_string(),
+            typ: TYP_AUTH.to_string(),
             iat: now.timestamp(),
             exp: (now + Duration::days(14)).timestamp(),
         };
@@ -181,6 +201,9 @@ impl JwtService {
         validation.validate_exp = true;
         let data: TokenData<AuthClaims> =
             decode(token, &DecodingKey::from_secret(&key), &validation)?;
+        if data.claims.typ != TYP_AUTH {
+            return Err(JwtError::InvalidToken);
+        }
         Ok(data.claims)
     }
 
@@ -190,6 +213,7 @@ impl JwtService {
         let now = Utc::now();
         let claims = StateClaims {
             sub: state_id.to_string(),
+            typ: TYP_STATE.to_string(),
             iat: now.timestamp(),
             exp: (now + Duration::seconds(60)).timestamp(),
         };
@@ -207,6 +231,9 @@ impl JwtService {
         validation.validate_exp = true;
         let data: TokenData<StateClaims> =
             decode(token, &DecodingKey::from_secret(&key), &validation)?;
+        if data.claims.typ != TYP_STATE {
+            return Err(JwtError::InvalidToken);
+        }
         Ok(data.claims.sub)
     }
 
@@ -227,6 +254,9 @@ impl JwtService {
         validation.validate_exp = true;
         let data: TokenData<OAuthStateClaims> =
             decode(token, &DecodingKey::from_secret(&key), &validation)?;
+        if data.claims.typ != TYP_OAUTH_STATE {
+            return Err(JwtError::InvalidToken);
+        }
         Ok(data.claims)
     }
 
@@ -266,6 +296,7 @@ impl JwtService {
         let now = Utc::now();
         let claims = VerificationClaims {
             sub: email.to_string(),
+            typ: TYP_VERIFICATION.to_string(),
             email: email.to_string(),
             purpose: purpose.to_string(),
             jti: Uuid::new_v4().to_string(),
@@ -286,6 +317,9 @@ impl JwtService {
         validation.validate_exp = true;
         let data: TokenData<VerificationClaims> =
             decode(token, &DecodingKey::from_secret(&key), &validation)?;
+        if data.claims.typ != TYP_VERIFICATION {
+            return Err(JwtError::InvalidToken);
+        }
         Ok(data.claims)
     }
 
@@ -294,13 +328,19 @@ impl JwtService {
     fn hmac_key_for_kid(&self, kid: Option<i32>) -> Result<Vec<u8>, JwtError> {
         match kid {
             Some(id) if id == self.hmac_key_id => Ok(self.hmac_key.clone()),
-            // If no kid or unknown kid, fall back to current key (backward compat)
-            _ => Ok(self.hmac_key.clone()),
+            Some(_) => Err(JwtError::KeyNotFound),
+            // No kid header: use current key (tokens we issued always have kid,
+            // but be lenient for tokens missing it)
+            None => Ok(self.hmac_key.clone()),
         }
     }
 
     fn es256_public_for_kid(&self, kid: Option<i32>) -> Result<Vec<u8>, JwtError> {
-        let id = kid.unwrap_or(self.es256_key_id);
+        let id = match kid {
+            Some(id) => id,
+            // No kid header: use current key (access tokens we issue always have kid)
+            None => self.es256_key_id,
+        };
         self.es256_public_keys
             .iter()
             .find(|(k, _)| *k == id)
@@ -333,6 +373,7 @@ impl OAuthStateClaims {
     ) -> Self {
         let now = Utc::now();
         OAuthStateClaims {
+            typ: TYP_OAUTH_STATE.to_string(),
             client_id,
             redirect_uri,
             scope,
@@ -389,6 +430,85 @@ mod tests {
         assert_eq!(claims.email, "user@example.com");
         assert_eq!(claims.purpose, "registration");
         assert!(!claims.jti.is_empty());
+    }
+
+    #[test]
+    fn token_type_confusion_rejected() {
+        let svc = test_service();
+
+        let auth_token = svc.create_auth_token("user-uuid").unwrap();
+        let state_token = svc.create_state_token("state-uuid").unwrap();
+        let verif_token = svc
+            .create_verification_token("a@b.com", "registration")
+            .unwrap();
+        let oauth_state_token = svc
+            .create_oauth_state_token(OAuthStateClaims::new(
+                "cid".into(),
+                "https://example.com/cb".into(),
+                "openid".into(),
+                "rand-state".into(),
+                "challenge".into(),
+                "S256".into(),
+                None,
+            ))
+            .unwrap();
+
+        // Each token type must be rejected by every other validator.
+        // auth → others
+        assert!(matches!(
+            svc.validate_state_token(&auth_token),
+            Err(JwtError::InvalidToken)
+        ));
+        assert!(matches!(
+            svc.validate_verification_token(&auth_token),
+            Err(JwtError::InvalidToken)
+        ));
+        assert!(matches!(
+            svc.validate_oauth_state_token(&auth_token),
+            Err(JwtError::InvalidToken)
+        ));
+
+        // state → others
+        assert!(matches!(
+            svc.validate_auth_token(&state_token),
+            Err(JwtError::InvalidToken)
+        ));
+        assert!(matches!(
+            svc.validate_verification_token(&state_token),
+            Err(JwtError::InvalidToken)
+        ));
+        assert!(matches!(
+            svc.validate_oauth_state_token(&state_token),
+            Err(JwtError::InvalidToken)
+        ));
+
+        // verification → others
+        assert!(matches!(
+            svc.validate_auth_token(&verif_token),
+            Err(JwtError::InvalidToken)
+        ));
+        assert!(matches!(
+            svc.validate_state_token(&verif_token),
+            Err(JwtError::InvalidToken)
+        ));
+        assert!(matches!(
+            svc.validate_oauth_state_token(&verif_token),
+            Err(JwtError::InvalidToken)
+        ));
+
+        // oauth-state → others
+        assert!(matches!(
+            svc.validate_auth_token(&oauth_state_token),
+            Err(JwtError::InvalidToken)
+        ));
+        assert!(matches!(
+            svc.validate_state_token(&oauth_state_token),
+            Err(JwtError::InvalidToken)
+        ));
+        assert!(matches!(
+            svc.validate_verification_token(&oauth_state_token),
+            Err(JwtError::InvalidToken)
+        ));
     }
 
     #[test]

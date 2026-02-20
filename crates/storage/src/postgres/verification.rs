@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{StorageError, VerificationCode, VerificationStorage, VerificationTokenStorage};
 
-use super::PostgresStorage;
+use super::{rate_limit_key, PostgresStorage};
 
 /// Maximum verification code attempts before lockout.
 const MAX_ATTEMPTS: i32 = 5;
@@ -122,16 +122,21 @@ impl VerificationStorage for PostgresStorage {
         email: &str,
         max_sends: i32,
         window: Duration,
-        _identity_hash_key: &[u8],
+        identity_hash_key: &[u8],
     ) -> Result<(), StorageError> {
+        // HMAC-hash the email to avoid storing plaintext PII in the rate limit table
+        let key = rate_limit_key(email, identity_hash_key);
         let window_secs = window.as_secs() as i64;
 
-        // Use a single upsert + check query
+        // Atomic upsert + check in a single statement. The UPSERT atomically
+        // increments send_count (or resets if the window has elapsed), and we
+        // check the result. No rollback needed — the count may exceed max_sends
+        // slightly under concurrency, but all over-limit requests are rejected.
         let row = sqlx::query!(
             r#"
-            INSERT INTO email_verification_rate_limits (email, send_count, window_start)
+            INSERT INTO email_verification_rate_limits (identity_key, send_count, window_start)
             VALUES ($1, 1, NOW())
-            ON CONFLICT (email) DO UPDATE
+            ON CONFLICT (identity_key) DO UPDATE
             SET send_count   = CASE
                 WHEN EXTRACT(EPOCH FROM (NOW() - email_verification_rate_limits.window_start))::bigint >= $2
                      THEN 1
@@ -144,7 +149,7 @@ impl VerificationStorage for PostgresStorage {
                 END
             RETURNING send_count
             "#,
-            email,
+            key,
             window_secs,
         )
         .fetch_one(&self.pool)
@@ -152,14 +157,6 @@ impl VerificationStorage for PostgresStorage {
         .map_err(StorageError::from)?;
 
         if row.send_count > max_sends {
-            // Roll back the increment
-            sqlx::query!(
-                "UPDATE email_verification_rate_limits SET send_count = send_count - 1 WHERE email = $1",
-                email,
-            )
-            .execute(&self.pool)
-            .await
-            .map_err(StorageError::from)?;
             return Err(StorageError::VerificationRateLimited);
         }
         Ok(())

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, issuer, username, email,\n                   opaque_registration, wrapped_root_key,\n                   created_at, updated_at\n            FROM accounts WHERE id = $1\n            ",
+  "query": "\n            SELECT id, issuer, username, email,\n                   opaque_record, wrapped_root_key,\n                   created_at, updated_at\n            FROM accounts WHERE issuer = $1 AND email = $2\n            ",
   "describe": {
     "columns": [
       {
@@ -25,7 +25,7 @@
       },
       {
         "ordinal": 4,
-        "name": "opaque_registration",
+        "name": "opaque_record",
         "type_info": "Bytea"
       },
       {
@@ -46,7 +46,8 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
@@ -60,5 +61,5 @@
       false
     ]
   },
-  "hash": "a6fabd9c9dbb706c32ab06fda8f36b8384a7956b7c44f8f5c3ba0f4ad26fc48b"
+  "hash": "e548092a525a1db8e5da0cddef59106332dc4d36cddfc91cb5dac9ec473cc06f"
 }

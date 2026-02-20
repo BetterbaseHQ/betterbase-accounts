@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO email_verification_rate_limits (identity_key, send_count, window_start)\n            VALUES ($1, 1, NOW())\n            ON CONFLICT (identity_key) DO UPDATE\n            SET send_count   = CASE\n                WHEN EXTRACT(EPOCH FROM (NOW() - email_verification_rate_limits.window_start))::bigint >= $2\n                     THEN 1\n                ELSE email_verification_rate_limits.send_count + 1\n                END,\n                window_start = CASE\n                WHEN EXTRACT(EPOCH FROM (NOW() - email_verification_rate_limits.window_start))::bigint >= $2\n                     THEN NOW()\n                ELSE email_verification_rate_limits.window_start\n                END\n            RETURNING send_count\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "send_count",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6c42670b72446b5c8f5f246f93fcbb71c547de77d9fa77144427dc0fa7601fed"
+}
