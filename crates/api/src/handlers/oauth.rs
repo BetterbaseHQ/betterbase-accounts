@@ -157,30 +157,43 @@ pub async fn handle_oauth_authorize(
         );
     }
 
-    // Parse optional keys_jwk
+    // Parse optional keys_jwk (base64url-encoded JSON, matching TS client encodePublicJwk)
     let keys_jwk: Option<serde_json::Value> = match &q.keys_jwk {
-        Some(s) => match serde_json::from_str(s) {
-            Ok(v) => {
-                // Validate it's a P-256 public key
-                if validate_p256_public_key(&v).is_err() {
+        Some(s) => {
+            let decoded = match B64URL.decode(s) {
+                Ok(b) => b,
+                Err(_) => {
                     return oauth_error_redirect(
                         Some(&redirect_uri),
                         Some(&client_state),
                         "invalid_request",
-                        "invalid keys_jwk",
-                    );
+                        "invalid keys_jwk encoding",
+                    )
                 }
-                Some(v)
+            };
+            match serde_json::from_slice(&decoded) {
+                Ok(v) => {
+                    // Validate it's a P-256 public key
+                    if validate_p256_public_key(&v).is_err() {
+                        return oauth_error_redirect(
+                            Some(&redirect_uri),
+                            Some(&client_state),
+                            "invalid_request",
+                            "invalid keys_jwk",
+                        );
+                    }
+                    Some(v)
+                }
+                Err(_) => {
+                    return oauth_error_redirect(
+                        Some(&redirect_uri),
+                        Some(&client_state),
+                        "invalid_request",
+                        "invalid keys_jwk JSON",
+                    )
+                }
             }
-            Err(_) => {
-                return oauth_error_redirect(
-                    Some(&redirect_uri),
-                    Some(&client_state),
-                    "invalid_request",
-                    "invalid keys_jwk JSON",
-                )
-            }
-        },
+        }
         None => None,
     };
 
@@ -523,7 +536,11 @@ async fn handle_authorization_code_grant(state: &AppState, req: TokenForm) -> Re
                 "keys_jwk_thumbprint required",
             );
         }
-        if req.keys_jwk_thumbprint != *thumbprint {
+        if !bool::from(
+            req.keys_jwk_thumbprint
+                .as_bytes()
+                .ct_eq(thumbprint.as_bytes()),
+        ) {
             return write_oauth_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_grant",
@@ -643,25 +660,30 @@ async fn handle_refresh_token_grant(state: &AppState, req: TokenForm) -> Respons
         Err(e) => return ApiError::from(e).into_response(),
     };
 
-    // Validate client_id matches grant
-    if !req.client_id.is_empty() {
-        let cid = match Uuid::parse_str(&req.client_id) {
-            Ok(id) => id,
-            Err(_) => {
-                return write_oauth_error(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_client",
-                    "invalid client_id",
-                )
-            }
-        };
-        if grant.client_id != cid {
+    // Validate client_id matches grant (required)
+    if req.client_id.is_empty() {
+        return write_oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "client_id is required",
+        );
+    }
+    let cid = match Uuid::parse_str(&req.client_id) {
+        Ok(id) => id,
+        Err(_) => {
             return write_oauth_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_client",
-                "client_id mismatch",
-            );
+                "invalid client_id",
+            )
         }
+    };
+    if grant.client_id != cid {
+        return write_oauth_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_client",
+            "client_id mismatch",
+        );
     }
 
     // Issue new access token
