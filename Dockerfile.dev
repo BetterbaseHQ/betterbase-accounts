@@ -1,3 +1,14 @@
+FROM node:22-bookworm-slim AS web-builder
+WORKDIR /web
+
+RUN corepack enable pnpm
+
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+COPY web/ ./
+RUN pnpm build
+
 FROM rust:1.88-bookworm
 
 RUN cargo install --locked cargo-watch
@@ -7,6 +18,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY bins ./bins
 COPY crates ./crates
+COPY --from=web-builder /web/dist/ /app/crates/api/assets/
 RUN cargo fetch --locked
 
 COPY docker/dev-entrypoint.sh /usr/local/bin/less-accounts-dev-entrypoint

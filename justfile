@@ -2,8 +2,8 @@
 default:
     @just --list
 
-# Run all checks (format, lint, test)
-check: fmt lint test
+# Run all checks (format, lint, test, web)
+check: fmt lint test check-web
 
 # Format code
 fmt:
@@ -29,9 +29,20 @@ build:
 build-release:
     cargo build --workspace --release
 
+# Build web UI (output to crates/api/assets/)
+build-web:
+    cd web && pnpm install && pnpm build
+    rm -rf crates/api/assets
+    cp -r web/dist crates/api/assets
+
+# Run web quality checks
+check-web:
+    cd web && pnpm install && pnpm check
+
 # Clean build artifacts
 clean:
     cargo clean
+    rm -rf crates/api/assets
 
 # Docker settings for test database
 _db_container := "less-accounts-rs-test-db"
