@@ -1,7 +1,7 @@
 import * as opaque from "@serenity-kit/opaque";
 
 // Must match ServerIdentity in Go server (services/opaque.go)
-const SERVER_IDENTITY = "less-accounts";
+const SERVER_IDENTITY = "betterbase-accounts";
 
 let initialized = false;
 

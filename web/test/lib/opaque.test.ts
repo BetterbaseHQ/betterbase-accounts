@@ -3,7 +3,7 @@ import * as opaque from "@serenity-kit/opaque";
 import { startRegistration, finishRegistration, startLogin, finishLogin } from "@/lib/opaque";
 
 // Must match Go server's ServerIdentity
-const SERVER_IDENTITY = "less-accounts";
+const SERVER_IDENTITY = "betterbase-accounts";
 
 describe("opaque", () => {
   // Server setup string (contains all server key material)

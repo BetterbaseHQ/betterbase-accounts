@@ -36,7 +36,7 @@ impl CipherSuite for DefaultCipherSuite {
 }
 
 /// Server identity string embedded in OPAQUE key exchange.
-const SERVER_ID: &[u8] = b"less-accounts";
+const SERVER_ID: &[u8] = b"betterbase-accounts";
 
 /// Result of a server registration start.
 pub struct RegistrationStartResult {

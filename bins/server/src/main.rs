@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! less-accounts server entry point.
+//! betterbase-accounts server entry point.
 
 use anyhow::Result;
 
