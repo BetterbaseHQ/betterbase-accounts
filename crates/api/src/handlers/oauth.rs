@@ -1131,7 +1131,7 @@ async fn issue_access_token(
         aud.push("less-sync".to_string());
     }
     if scopes.contains(&"inference") {
-        aud.push("less-inference".to_string());
+        aud.push("betterbase-inference".to_string());
     }
 
     let did = grant
