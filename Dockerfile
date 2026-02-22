@@ -20,9 +20,9 @@ COPY . .
 COPY --from=web-builder /web/dist/ /app/crates/api/assets/
 ENV SQLX_OFFLINE=true
 RUN cargo build --locked --release \
-    -p less-accounts-server \
-    -p less-accounts-keygen \
-    -p less-accounts-oauth-client
+    -p betterbase-accounts-server \
+    -p betterbase-accounts-keygen \
+    -p betterbase-accounts-oauth-client
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
@@ -35,13 +35,13 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/less-accounts-server /app/server
-COPY --from=builder /app/target/release/less-accounts-keygen /app/keygen
-COPY --from=builder /app/target/release/less-accounts-oauth-client /app/oauth-client
-COPY docker/entrypoint.sh /usr/local/bin/less-accounts-entrypoint
-RUN chmod +x /usr/local/bin/less-accounts-entrypoint
+COPY --from=builder /app/target/release/betterbase-accounts-server /app/server
+COPY --from=builder /app/target/release/betterbase-accounts-keygen /app/keygen
+COPY --from=builder /app/target/release/betterbase-accounts-oauth-client /app/oauth-client
+COPY docker/entrypoint.sh /usr/local/bin/betterbase-accounts-entrypoint
+RUN chmod +x /usr/local/bin/betterbase-accounts-entrypoint
 
 USER nonroot
 EXPOSE 5377
 
-ENTRYPOINT ["/usr/local/bin/less-accounts-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/betterbase-accounts-entrypoint"]

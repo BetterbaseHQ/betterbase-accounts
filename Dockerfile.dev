@@ -21,11 +21,11 @@ COPY crates ./crates
 COPY --from=web-builder /web/dist/ /app/crates/api/assets/
 RUN cargo fetch --locked
 
-COPY docker/dev-entrypoint.sh /usr/local/bin/less-accounts-dev-entrypoint
-RUN chmod +x /usr/local/bin/less-accounts-dev-entrypoint
+COPY docker/dev-entrypoint.sh /usr/local/bin/betterbase-accounts-dev-entrypoint
+RUN chmod +x /usr/local/bin/betterbase-accounts-dev-entrypoint
 
-ENV CARGO_TARGET_DIR=/tmp/less-accounts-rs-target
+ENV CARGO_TARGET_DIR=/tmp/betterbase-accounts-rs-target
 
 EXPOSE 5377
 
-CMD ["/usr/local/bin/less-accounts-dev-entrypoint"]
+CMD ["/usr/local/bin/betterbase-accounts-dev-entrypoint"]
