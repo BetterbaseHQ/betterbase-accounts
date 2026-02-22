@@ -168,6 +168,166 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "betterbase-accounts-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "betterbase-accounts-auth",
+ "betterbase-accounts-cap",
+ "betterbase-accounts-core",
+ "betterbase-accounts-email",
+ "betterbase-accounts-storage",
+ "chrono",
+ "form_urlencoded",
+ "hex",
+ "hmac",
+ "http",
+ "mime_guess",
+ "p256",
+ "rand 0.8.5",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "betterbase-accounts-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "betterbase-accounts-api",
+ "betterbase-accounts-auth",
+ "betterbase-accounts-cap",
+ "betterbase-accounts-core",
+ "betterbase-accounts-email",
+ "betterbase-accounts-storage",
+ "hex",
+ "rand 0.8.5",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "betterbase-accounts-auth"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "betterbase-accounts-core",
+ "betterbase-accounts-storage",
+ "bs58",
+ "chrono",
+ "hex",
+ "hmac",
+ "jsonwebtoken",
+ "opaque-ke",
+ "p256",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "betterbase-accounts-cap"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "betterbase-accounts-core"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bs58",
+ "p256",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "betterbase-accounts-email"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "lettre",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "betterbase-accounts-keygen"
+version = "0.1.0"
+dependencies = [
+ "betterbase-accounts-auth",
+]
+
+[[package]]
+name = "betterbase-accounts-oauth-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "betterbase-accounts-storage",
+ "chrono",
+ "sqlx",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "betterbase-accounts-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "betterbase-accounts-app",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "betterbase-accounts-storage"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "betterbase-accounts-core",
+ "chrono",
+ "hex",
+ "hmac",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1127,166 +1287,6 @@ name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
-
-[[package]]
-name = "less-accounts-api"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "base64",
- "chrono",
- "form_urlencoded",
- "hex",
- "hmac",
- "http",
- "less-accounts-auth",
- "less-accounts-cap",
- "less-accounts-core",
- "less-accounts-email",
- "less-accounts-storage",
- "mime_guess",
- "p256",
- "rand 0.8.5",
- "rust-embed",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "thiserror",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "less-accounts-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "hex",
- "less-accounts-api",
- "less-accounts-auth",
- "less-accounts-cap",
- "less-accounts-core",
- "less-accounts-email",
- "less-accounts-storage",
- "rand 0.8.5",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "less-accounts-auth"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "base64",
- "bs58",
- "chrono",
- "hex",
- "hmac",
- "jsonwebtoken",
- "less-accounts-core",
- "less-accounts-storage",
- "opaque-ke",
- "p256",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "less-accounts-cap"
-version = "0.1.0"
-dependencies = [
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "less-accounts-core"
-version = "0.1.0"
-dependencies = [
- "base64",
- "bs58",
- "p256",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "less-accounts-email"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "lettre",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "less-accounts-keygen"
-version = "0.1.0"
-dependencies = [
- "less-accounts-auth",
-]
-
-[[package]]
-name = "less-accounts-oauth-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "less-accounts-storage",
- "sqlx",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "less-accounts-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "less-accounts-app",
- "tokio",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "less-accounts-storage"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "hex",
- "hmac",
- "less-accounts-core",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
-]
 
 [[package]]
 name = "lettre"

@@ -8,9 +8,9 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use std::time::Duration;
 
-use less_accounts_auth::{jwt::JwtError, middleware::AuthContext, opaque::OpaqueError};
-use less_accounts_core::{email::validate_email, protocol::*, username::validate_username};
-use less_accounts_storage::{
+use betterbase_accounts_auth::{jwt::JwtError, middleware::AuthContext, opaque::OpaqueError};
+use betterbase_accounts_core::{email::validate_email, protocol::*, username::validate_username};
+use betterbase_accounts_storage::{
     AccountStorage, LoginState, LoginStateStorage, RateLimitStorage, RegistrationState,
     RegistrationStateStorage, StorageError, VerificationTokenStorage,
 };
@@ -46,7 +46,7 @@ pub async fn handle_password_init(
             _ => ApiError::unauthorized("invalid verification token"),
         })?;
 
-    if v_claims.purpose != less_accounts_core::purpose::REGISTRATION
+    if v_claims.purpose != betterbase_accounts_core::purpose::REGISTRATION
         || v_claims.email.to_lowercase() != req.email.to_lowercase()
     {
         return Err(ApiError::unauthorized("invalid verification token"));
@@ -72,8 +72,8 @@ pub async fn handle_password_init(
         .map_err(|_| ApiError::bad_request("invalid opaque_request encoding"))?;
 
     // Get or create account (pre-creates if not exists)
-    let canonical_email = less_accounts_core::email::canonicalize_email(&req.email);
-    let canonical_username = less_accounts_core::username::canonicalize_username(&req.username);
+    let canonical_email = betterbase_accounts_core::email::canonicalize_email(&req.email);
+    let canonical_username = betterbase_accounts_core::username::canonicalize_username(&req.username);
     let account = state
         .storage
         .get_or_create_account(&state.config.issuer, &canonical_username, &canonical_email)
@@ -193,7 +193,7 @@ pub async fn handle_login_init(
 
     validate_username(&req.username).map_err(|_| ApiError::bad_request("invalid username"))?;
 
-    let canonical_username = less_accounts_core::username::canonicalize_username(&req.username);
+    let canonical_username = betterbase_accounts_core::username::canonicalize_username(&req.username);
 
     // Check rate limit
     state
@@ -335,7 +335,7 @@ pub async fn handle_validate(
     let auth_ctx = extract_auth(&state, &headers)?;
     let account = state.storage.get_account_by_id(auth_ctx.account_id).await?;
 
-    let handle = less_accounts_core::identity::format_handle(
+    let handle = betterbase_accounts_core::identity::format_handle(
         &account.username,
         &state.config.identity_domain,
     );
@@ -380,7 +380,7 @@ pub fn extract_auth(state: &AppState, headers: &HeaderMap) -> Result<AuthContext
 pub fn extract_oauth_token(
     state: &AppState,
     headers: &HeaderMap,
-) -> Result<less_accounts_auth::jwt::OAuthAccessClaims, ApiError> {
+) -> Result<betterbase_accounts_auth::jwt::OAuthAccessClaims, ApiError> {
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())

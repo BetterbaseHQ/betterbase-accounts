@@ -1,9 +1,9 @@
 [package]
-name = "less-accounts-keygen"
+name = "betterbase-accounts-keygen"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-less-accounts-auth = { path = "../../crates/auth" }
+betterbase-accounts-auth = { path = "../../crates/auth" }

@@ -5,8 +5,8 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use less_accounts_core::protocol::*;
-use less_accounts_storage::UserKeyStorage;
+use betterbase_accounts_core::protocol::*;
+use betterbase_accounts_storage::UserKeyStorage;
 
 use crate::{error::ApiError, handlers::auth::extract_auth, state::AppState};
 

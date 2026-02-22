@@ -1,13 +1,13 @@
 //! Email verification code send and confirm.
 
 use axum::{extract::State, http::StatusCode, Json};
-use less_accounts_core::{
+use betterbase_accounts_core::{
     email::{canonicalize_email, validate_email},
     protocol::*,
     purpose,
     username::validate_username,
 };
-use less_accounts_storage::{AccountStorage, StorageError};
+use betterbase_accounts_storage::{AccountStorage, StorageError};
 
 use crate::{error::ApiError, state::AppState, verification};
 
@@ -32,7 +32,7 @@ pub async fn handle_send_verification_code(
 
             let canonical_email = canonicalize_email(&req.email);
             let canonical_username =
-                less_accounts_core::username::canonicalize_username(&req.username);
+                betterbase_accounts_core::username::canonicalize_username(&req.username);
 
             // Check availability — return 204 without sending if not available
             // (the error will surface at registration time)

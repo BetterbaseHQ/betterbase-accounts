@@ -104,18 +104,18 @@ const UUID_DNS: Uuid = uuid::uuid!("6ba7b810-9dad-11d1-80b4-00c04fd430c8");
 ///
 /// Formula (matching Go server):
 /// ```text
-/// LESS_NS = UUID5(DNS, "less.so")
-/// personal_space_id = UUID5(LESS_NS, "{issuer}\x00{user_id}\x00{client_id}")
+/// BETTERBASE_NS = UUID5(DNS, "betterbase.dev")
+/// personal_space_id = UUID5(BETTERBASE_NS, "{issuer}\x00{user_id}\x00{client_id}")
 /// ```
 pub fn personal_space_id(issuer: &str, user_id: &str, client_id: &str) -> Uuid {
-    let less_ns = Uuid::new_v5(&UUID_DNS, b"less.so");
+    let betterbase_ns = Uuid::new_v5(&UUID_DNS, b"betterbase.dev");
     let mut input = String::new();
     input.push_str(issuer);
     input.push('\0');
     input.push_str(user_id);
     input.push('\0');
     input.push_str(client_id);
-    Uuid::new_v5(&less_ns, input.as_bytes())
+    Uuid::new_v5(&betterbase_ns, input.as_bytes())
 }
 
 #[cfg(test)]

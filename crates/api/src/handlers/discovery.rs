@@ -6,13 +6,13 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use less_accounts_core::protocol::*;
-use less_accounts_storage::{AccountStorage, StorageError};
+use betterbase_accounts_core::protocol::*;
+use betterbase_accounts_storage::{AccountStorage, StorageError};
 use serde::Deserialize;
 
 use crate::state::AppState;
 
-/// GET /.well-known/less-platform
+/// GET /.well-known/betterbase
 pub async fn handle_server_metadata(State(state): State<AppState>) -> Response {
     let meta = ServerMetadataResponse {
         version: 1,
@@ -22,7 +22,7 @@ pub async fn handle_server_metadata(State(state): State<AppState>) -> Response {
         federation_ws: state.config.federation_ws_endpoint.clone(),
         jwks_uri: format!("{}/.well-known/jwks.json", state.config.issuer),
         webfinger: format!("{}/.well-known/webfinger", state.config.issuer),
-        protocols: vec!["less-rpc-v1".to_string()],
+        protocols: vec!["betterbase-rpc-v1".to_string()],
         pow_required: state.config.cap_enabled,
     };
 
@@ -108,7 +108,7 @@ pub async fn handle_webfinger(
 
     if let Some(sync) = &state.config.sync_endpoint {
         links.push(WebFingerLink {
-            rel: "https://less.so/rel/sync".to_string(),
+            rel: "https://betterbase.dev/rel/sync".to_string(),
             href: Some(sync.clone()),
         });
     }

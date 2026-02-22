@@ -5,7 +5,7 @@ use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = less_accounts_app::AppConfig::from_env()?;
+    let config = betterbase_accounts_app::AppConfig::from_env()?;
 
     // Set up tracing
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -20,5 +20,5 @@ async fn main() -> Result<()> {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
-    less_accounts_app::run(config).await
+    betterbase_accounts_app::run(config).await
 }

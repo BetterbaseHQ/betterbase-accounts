@@ -2,17 +2,17 @@
 
 use std::sync::Arc;
 
-use less_accounts_auth::{jwt::JwtService, opaque::OpaqueService};
-use less_accounts_cap::CapService;
-use less_accounts_email::Mailer;
-use less_accounts_storage::postgres::PostgresStorage;
+use betterbase_accounts_auth::{jwt::JwtService, opaque::OpaqueService};
+use betterbase_accounts_cap::CapService;
+use betterbase_accounts_email::Mailer;
+use betterbase_accounts_storage::postgres::PostgresStorage;
 
 /// Server configuration derived from environment variables.
 #[derive(Debug, Clone)]
 pub struct ApiConfig {
-    /// OAuth issuer URL (e.g. `https://accounts.less.so`)
+    /// OAuth issuer URL (e.g. `https://accounts.betterbase.dev`)
     pub issuer: String,
-    /// Identity domain extracted from issuer (e.g. `less.so`)
+    /// Identity domain extracted from issuer (e.g. `betterbase.dev`)
     pub identity_domain: String,
     /// Optional sync endpoint URL
     pub sync_endpoint: Option<String>,

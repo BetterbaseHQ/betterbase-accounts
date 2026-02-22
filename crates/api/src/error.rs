@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use less_accounts_storage::StorageError;
+use betterbase_accounts_storage::StorageError;
 use serde_json::json;
 
 pub struct ApiError {
@@ -111,9 +111,9 @@ impl From<StorageError> for ApiError {
     }
 }
 
-impl From<less_accounts_auth::jwt::JwtError> for ApiError {
-    fn from(e: less_accounts_auth::jwt::JwtError) -> Self {
-        use less_accounts_auth::jwt::JwtError;
+impl From<betterbase_accounts_auth::jwt::JwtError> for ApiError {
+    fn from(e: betterbase_accounts_auth::jwt::JwtError) -> Self {
+        use betterbase_accounts_auth::jwt::JwtError;
         match e {
             JwtError::TokenExpired => ApiError::unauthorized("token expired"),
             JwtError::InvalidToken | JwtError::KeyNotFound => {

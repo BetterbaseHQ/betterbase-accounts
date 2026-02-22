@@ -4,16 +4,16 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use less_accounts_auth::{es256::generate_keypair, jwt::JwtService, opaque::OpaqueService};
-use less_accounts_cap::{CapConfig, CapService};
-use less_accounts_email::{DevMailer, Mailer, SmtpConfig, SmtpMailer};
-use less_accounts_storage::{
+use betterbase_accounts_auth::{es256::generate_keypair, jwt::JwtService, opaque::OpaqueService};
+use betterbase_accounts_cap::{CapConfig, CapService};
+use betterbase_accounts_email::{DevMailer, Mailer, SmtpConfig, SmtpMailer};
+use betterbase_accounts_storage::{
     postgres::PostgresStorage, CleanupStorage, JwtKeyStorage, OAuthSigningKeyStorage,
 };
 use tokio::time;
 use tracing::info;
 
-use less_accounts_api::state::{ApiConfig, AppState};
+use betterbase_accounts_api::state::{ApiConfig, AppState};
 
 /// Application configuration loaded from environment variables.
 pub struct AppConfig {
@@ -84,7 +84,7 @@ impl AppConfig {
                 .unwrap_or(587),
             smtp_username: std::env::var("SMTP_USERNAME").unwrap_or_default(),
             smtp_password: std::env::var("SMTP_PASSWORD").unwrap_or_default(),
-            smtp_from: std::env::var("SMTP_FROM").unwrap_or_else(|_| "noreply@less.so".to_string()),
+            smtp_from: std::env::var("SMTP_FROM").unwrap_or_else(|_| "noreply@betterbase.dev".to_string()),
         })
     }
 }
@@ -200,7 +200,7 @@ pub async fn run(config: AppConfig) -> Result<()> {
     };
 
     // Build router
-    let router = less_accounts_api::build_router(app_state);
+    let router = betterbase_accounts_api::build_router(app_state);
 
     // Background cleanup loop (every 60 seconds)
     let cleanup_storage = storage.clone();

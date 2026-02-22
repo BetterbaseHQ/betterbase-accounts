@@ -1,5 +1,5 @@
 [package]
-name = "less-accounts-email"
+name = "betterbase-accounts-email"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

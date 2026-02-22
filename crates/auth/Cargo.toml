@@ -1,5 +1,5 @@
 [package]
-name = "less-accounts-auth"
+name = "betterbase-accounts-auth"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,8 +14,8 @@ bs58.workspace = true
 chrono.workspace = true
 hmac.workspace = true
 jsonwebtoken.workspace = true
-less-accounts-core = { path = "../core" }
-less-accounts-storage = { path = "../storage" }
+betterbase-accounts-core = { path = "../core" }
+betterbase-accounts-storage = { path = "../storage" }
 opaque-ke.workspace = true
 p256.workspace = true
 rand.workspace = true

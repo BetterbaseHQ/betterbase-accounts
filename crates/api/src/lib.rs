@@ -134,7 +134,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         // Discovery
         .route(
-            "/.well-known/less-platform",
+            "/.well-known/betterbase",
             get(discovery::handle_server_metadata),
         )
         .route("/.well-known/webfinger", get(discovery::handle_webfinger))

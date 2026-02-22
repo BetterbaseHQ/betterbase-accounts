@@ -6,7 +6,7 @@
 //!   oauth-client list
 
 use anyhow::{bail, Context, Result};
-use less_accounts_storage::{postgres::PostgresStorage, OAuthClient, OAuthClientStorage};
+use betterbase_accounts_storage::{postgres::PostgresStorage, OAuthClient, OAuthClientStorage};
 use uuid::Uuid;
 
 #[tokio::main]

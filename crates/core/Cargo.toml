@@ -1,5 +1,5 @@
 [package]
-name = "less-accounts-core"
+name = "betterbase-accounts-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

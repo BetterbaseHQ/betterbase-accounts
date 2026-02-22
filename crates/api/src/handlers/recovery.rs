@@ -6,9 +6,9 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use less_accounts_auth::{jwt::JwtError, opaque::OpaqueError};
-use less_accounts_core::protocol::*;
-use less_accounts_storage::{
+use betterbase_accounts_auth::{jwt::JwtError, opaque::OpaqueError};
+use betterbase_accounts_core::protocol::*;
+use betterbase_accounts_storage::{
     AccountStorage, CompositeStorage, RateLimitStorage, RecoveryStorage, RegistrationState,
     RegistrationStateStorage, StorageError, VerificationTokenStorage,
 };
@@ -67,7 +67,7 @@ pub async fn handle_get_recovery_blob(
         .validate_verification_token(token)
         .map_err(|_| ApiError::not_found("not found"))?;
 
-    if claims.purpose != less_accounts_core::purpose::RECOVERY {
+    if claims.purpose != betterbase_accounts_core::purpose::RECOVERY {
         return Err(ApiError::not_found("not found"));
     }
 
@@ -112,7 +112,7 @@ pub async fn handle_recover_init(
             _ => ApiError::bad_request("invalid verification token"),
         })?;
 
-    if v_claims.purpose != less_accounts_core::purpose::RECOVERY {
+    if v_claims.purpose != betterbase_accounts_core::purpose::RECOVERY {
         return Err(ApiError::bad_request("invalid verification token purpose"));
     }
 
@@ -129,7 +129,7 @@ pub async fn handle_recover_init(
             _ => ApiError::from(e),
         })?;
 
-    let canonical_email = less_accounts_core::email::canonicalize_email(&req.email);
+    let canonical_email = betterbase_accounts_core::email::canonicalize_email(&req.email);
 
     // Recovery rate limit
     state

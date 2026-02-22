@@ -1,5 +1,5 @@
 [package]
-name = "less-accounts-cap"
+name = "betterbase-accounts-cap"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

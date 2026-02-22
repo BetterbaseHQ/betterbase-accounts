@@ -6,8 +6,8 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use less_accounts_core::protocol::*;
-use less_accounts_storage::{
+use betterbase_accounts_core::protocol::*;
+use betterbase_accounts_storage::{
     CompositeStorage, GrantKeyUpdate as StorageGrantKeyUpdate, OAuthGrantStorage, RootKeyStorage,
 };
 use uuid::Uuid;

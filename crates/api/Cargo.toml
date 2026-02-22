@@ -1,5 +1,5 @@
 [package]
-name = "less-accounts-api"
+name = "betterbase-accounts-api"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,11 +15,11 @@ p256.workspace = true
 hex.workspace = true
 hmac.workspace = true
 http.workspace = true
-less-accounts-auth = { path = "../auth" }
-less-accounts-cap = { path = "../cap" }
-less-accounts-core = { path = "../core" }
-less-accounts-email = { path = "../email" }
-less-accounts-storage = { path = "../storage" }
+betterbase-accounts-auth = { path = "../auth" }
+betterbase-accounts-cap = { path = "../cap" }
+betterbase-accounts-core = { path = "../core" }
+betterbase-accounts-email = { path = "../email" }
+betterbase-accounts-storage = { path = "../storage" }
 mime_guess.workspace = true
 rand.workspace = true
 rust-embed.workspace = true

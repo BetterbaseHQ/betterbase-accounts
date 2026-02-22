@@ -2,9 +2,9 @@
 
 use axum::{extract::State, http::HeaderMap, Json};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use less_accounts_auth::opaque::OpaqueError;
-use less_accounts_core::protocol::*;
-use less_accounts_storage::{
+use betterbase_accounts_auth::opaque::OpaqueError;
+use betterbase_accounts_core::protocol::*;
+use betterbase_accounts_storage::{
     AccountStorage, CompositeStorage, LoginState, LoginStateStorage, RegistrationState,
     RegistrationStateStorage,
 };

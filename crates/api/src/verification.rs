@@ -4,8 +4,8 @@
 
 use std::time::Duration;
 
-use less_accounts_email::VerificationEmail;
-use less_accounts_storage::{StorageError, VerificationCode, VerificationStorage};
+use betterbase_accounts_email::VerificationEmail;
+use betterbase_accounts_storage::{StorageError, VerificationCode, VerificationStorage};
 use rand::{rngs::OsRng, Rng};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;

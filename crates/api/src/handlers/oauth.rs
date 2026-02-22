@@ -18,13 +18,13 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use less_accounts_auth::es256::Jwks;
-use less_accounts_auth::jwt::{OAuthAccessClaims, OAuthStateClaims};
-use less_accounts_core::{
+use betterbase_accounts_auth::es256::Jwks;
+use betterbase_accounts_auth::jwt::{OAuthAccessClaims, OAuthStateClaims};
+use betterbase_accounts_core::{
     identity::{compute_did_key, format_handle, personal_space_id},
     protocol::*,
 };
-use less_accounts_storage::{
+use betterbase_accounts_storage::{
     AccountStorage, OAuthClient, OAuthClientStorage, OAuthCode, OAuthCodeStorage, OAuthGrant,
     OAuthGrantStorage, OAuthRefreshToken, OAuthRefreshTokenStorage, OAuthSigningKeyStorage,
     StorageError,
