@@ -1128,7 +1128,7 @@ async fn issue_access_token(
 
     let mut aud = vec![grant.client_id.to_string()];
     if scopes.contains(&"sync") || scopes.contains(&"files") {
-        aud.push("less-sync".to_string());
+        aud.push("betterbase-sync".to_string());
     }
     if scopes.contains(&"inference") {
         aud.push("betterbase-inference".to_string());

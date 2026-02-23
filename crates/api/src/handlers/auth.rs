@@ -73,7 +73,8 @@ pub async fn handle_password_init(
 
     // Get or create account (pre-creates if not exists)
     let canonical_email = betterbase_accounts_core::email::canonicalize_email(&req.email);
-    let canonical_username = betterbase_accounts_core::username::canonicalize_username(&req.username);
+    let canonical_username =
+        betterbase_accounts_core::username::canonicalize_username(&req.username);
     let account = state
         .storage
         .get_or_create_account(&state.config.issuer, &canonical_username, &canonical_email)
@@ -193,7 +194,8 @@ pub async fn handle_login_init(
 
     validate_username(&req.username).map_err(|_| ApiError::bad_request("invalid username"))?;
 
-    let canonical_username = betterbase_accounts_core::username::canonicalize_username(&req.username);
+    let canonical_username =
+        betterbase_accounts_core::username::canonicalize_username(&req.username);
 
     // Check rate limit
     state

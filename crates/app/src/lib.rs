@@ -84,7 +84,8 @@ impl AppConfig {
                 .unwrap_or(587),
             smtp_username: std::env::var("SMTP_USERNAME").unwrap_or_default(),
             smtp_password: std::env::var("SMTP_PASSWORD").unwrap_or_default(),
-            smtp_from: std::env::var("SMTP_FROM").unwrap_or_else(|_| "noreply@betterbase.dev".to_string()),
+            smtp_from: std::env::var("SMTP_FROM")
+                .unwrap_or_else(|_| "noreply@betterbase.dev".to_string()),
         })
     }
 }
