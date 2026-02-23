@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Shared domain types and validation for betterbase-accounts"
 
 [dependencies]
 base64.workspace = true

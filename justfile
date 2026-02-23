@@ -45,7 +45,7 @@ clean:
     rm -rf crates/api/assets
 
 # Docker settings for test database
-_db_container := "less-accounts-rs-test-db"
+_db_container := "betterbase-accounts-test-db"
 _db_port      := "15433"
 _db_user      := "accounts"
 _db_pass      := "accounts"

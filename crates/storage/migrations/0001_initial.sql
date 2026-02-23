@@ -1,4 +1,4 @@
--- Initial schema for less-accounts-rs.
+-- Initial schema for betterbase-accounts.
 -- Differences from Go schema:
 --   - No oprf_seeds table (opaque-ke bundles them in ServerSetup)
 --   - No oprf_seed_id FK on accounts, registration_states, login_states

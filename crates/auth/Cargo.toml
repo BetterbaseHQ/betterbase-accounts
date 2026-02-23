@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "OPAQUE registration/login and JWT/ES256 key management"
 
 [dependencies]
 async-trait.workspace = true

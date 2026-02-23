@@ -18,6 +18,9 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 rust-version = "1.88"
+description = "OPAQUE + OAuth 2.0 authentication server for the Betterbase platform"
+authors = ["Betterbase <hello@betterbase.dev>"]
+repository = "https://github.com/BetterbaseHQ/betterbase-accounts"
 
 [workspace.dependencies]
 anyhow = "1.0"
