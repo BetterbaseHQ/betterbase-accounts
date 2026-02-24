@@ -48,7 +48,7 @@ export function generateRandomKey(): Uint8Array {
 
 /**
  * Derive a wrapping key for the root key using HKDF-SHA256.
- * Info string: "less:root_key_wrap:v1:{userId}"
+ * Info string: "betterbase:root_key_wrap:v1:{userId}"
  */
 export async function deriveRootKeyWrappingKey(
   exportKey: Uint8Array,
@@ -56,7 +56,7 @@ export async function deriveRootKeyWrappingKey(
 ): Promise<CryptoKey> {
   validateUserId(userId);
 
-  const info = new TextEncoder().encode(`less:root_key_wrap:v1:${userId}`);
+  const info = new TextEncoder().encode(`betterbase:root_key_wrap:v1:${userId}`);
 
   const baseKey = await crypto.subtle.importKey("raw", new Uint8Array(exportKey), "HKDF", false, [
     "deriveKey",
@@ -305,7 +305,7 @@ export async function generateAppKeypair(): Promise<{
 /**
  * Derive a wrapping key for the app keypair blob using HKDF.
  * Sourced from scopedKey (NOT exportKey) — survives both password change and root key rotation.
- * Info string: "less:app_keypair:v1:{userId}:{clientId}"
+ * Info string: "betterbase:app_keypair:v1:{userId}:{clientId}"
  */
 export async function deriveAppKeypairKey(
   scopedKey: Uint8Array,
@@ -317,7 +317,7 @@ export async function deriveAppKeypairKey(
     throw new Error("Invalid client ID format");
   }
 
-  const info = new TextEncoder().encode(`less:app_keypair:v1:${userId}:${clientId}`);
+  const info = new TextEncoder().encode(`betterbase:app_keypair:v1:${userId}:${clientId}`);
 
   const baseKey = await crypto.subtle.importKey("raw", new Uint8Array(scopedKey), "HKDF", false, [
     "deriveKey",

@@ -55,7 +55,7 @@ export async function deriveRecoveryKey(mnemonic: string): Promise<CryptoKey> {
   ]);
 
   // Derive 32 bytes using HKDF-SHA256 with domain separation
-  const info = new TextEncoder().encode("less:recovery_key:v1");
+  const info = new TextEncoder().encode("betterbase:recovery_key:v1");
   const derivedBits = await crypto.subtle.deriveBits(
     {
       name: "HKDF",

@@ -142,7 +142,7 @@ All v1 routes are immutable contracts. Every response includes `X-Protocol-Versi
 - [betterbase-dev](https://github.com/BetterbaseHQ/betterbase-dev) -- Platform orchestration
 - [betterbase-sync](../betterbase-sync/) -- Encrypted blob sync service
 - [betterbase-inference](../betterbase-inference/) -- E2EE inference proxy
-- [@betterbase/sdk](../betterbase/) -- Client SDK (auth, crypto, discovery, sync, db)
+- [betterbase](../betterbase/) -- Client SDK (auth, crypto, discovery, sync, db)
 
 ## License
 
