@@ -1,2 +1,7 @@
 target/
 .git/
+node_modules/
+.env*
+*.md
+docker-compose*.yml
+Dockerfile.dev
