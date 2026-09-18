@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for AI coding agents working with code in this repository.
 
 ## Overview
 
@@ -126,5 +126,5 @@ All routes are immutable v1 contracts -- paths must not change without a version
 
 ## Docker
 
-- `Dockerfile` -- Multi-stage production build: Node 22 (web UI) + Rust 1.88 (binaries) -> debian:bookworm-slim, nonroot user, port 5377
+- `Dockerfile` -- Multi-stage production build: Node 24 (web UI) + Rust 1.98 (binaries) -> debian:bookworm-slim, nonroot user, port 5377
 - `Dockerfile.dev` -- Dev build with `cargo-watch` hot reload
