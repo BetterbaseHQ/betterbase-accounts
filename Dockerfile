@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # --- Web UI build ---
-FROM node:22-bookworm-slim AS web-builder
+FROM node:24.21-bookworm-slim AS web-builder
 WORKDIR /web
 
 RUN corepack enable pnpm
@@ -13,7 +13,7 @@ COPY web/ ./
 RUN pnpm build
 
 # --- Dependency cache ---
-FROM rust:1.88-bookworm AS chef
+FROM rust:1.98.1-bookworm AS chef
 RUN cargo install cargo-chef --locked --version 0.1.77
 WORKDIR /app
 
