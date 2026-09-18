@@ -10,6 +10,7 @@ use betterbase_accounts_email::{DevMailer, Mailer, SmtpConfig, SmtpMailer};
 use betterbase_accounts_storage::{
     postgres::PostgresStorage, CleanupStorage, JwtKeyStorage, OAuthSigningKeyStorage,
 };
+use rand::RngExt;
 use tokio::time;
 use tracing::info;
 
@@ -103,7 +104,7 @@ pub async fn run(config: AppConfig) -> Result<()> {
     info!("bootstrapping JWT key");
     let hmac_secret: Vec<u8> = {
         let mut bytes = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut bytes);
+        rand::rng().fill(&mut bytes);
         bytes.to_vec()
     };
     storage

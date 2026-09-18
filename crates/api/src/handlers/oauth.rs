@@ -13,7 +13,8 @@ use base64::{
     engine::general_purpose::STANDARD as B64, engine::general_purpose::URL_SAFE_NO_PAD as B64URL,
     Engine as _,
 };
-use p256::elliptic_curve::sec1::{FromEncodedPoint as _, ToEncodedPoint as _};
+use p256::elliptic_curve::sec1::{FromSec1Point as _, ToSec1Point as _};
+use rand::RngExt;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -1056,19 +1057,20 @@ fn validate_p256_public_key(jwk: &serde_json::Value) -> Result<serde_json::Value
     let y_bytes = B64URL.decode(y_str).map_err(|_| "invalid y".to_string())?;
 
     // Verify point is on the P-256 curve
-    let x_field =
-        p256::FieldBytes::from_exact_iter(x_bytes.iter().copied()).ok_or("x must be 32 bytes")?;
-    let y_field =
-        p256::FieldBytes::from_exact_iter(y_bytes.iter().copied()).ok_or("y must be 32 bytes")?;
+    if x_bytes.len() != 32 || y_bytes.len() != 32 {
+        return Err("coordinates must be 32 bytes".into());
+    }
+    let x_field = p256::FieldBytes::try_from(x_bytes.as_slice()).expect("length checked above");
+    let y_field = p256::FieldBytes::try_from(y_bytes.as_slice()).expect("length checked above");
     let encoded_point =
-        p256::EncodedPoint::from_affine_coordinates(&x_field, &y_field, /* compress */ false);
+        p256::Sec1Point::from_affine_coordinates(&x_field, &y_field, /* compress */ false);
     let affine: p256::AffinePoint =
-        Option::from(p256::AffinePoint::from_encoded_point(&encoded_point))
+        Option::from(p256::AffinePoint::from_sec1_point(&encoded_point))
             .ok_or("point is not on P-256 curve")?;
 
     // Re-encode from validated point for canonical output (ensures consistent
     // base64url encoding for thumbprint computation)
-    let validated = affine.to_encoded_point(false);
+    let validated = affine.to_sec1_point(false);
     let x_canonical = B64URL.encode(validated.x().expect("affine point has x"));
     let y_canonical = B64URL.encode(validated.y().expect("affine point has y"));
 
@@ -1097,7 +1099,7 @@ fn verify_pkce_with_thumbprint(verifier: &str, thumbprint: &str, challenge: &str
 /// Generate a cryptographically random token (32 bytes, base64url-encoded).
 fn generate_random_token() -> String {
     let mut bytes = [0u8; 32];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut bytes);
+    rand::rng().fill(&mut bytes);
     B64URL.encode(bytes)
 }
 

@@ -5,7 +5,8 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
 use p256::{
     ecdsa::SigningKey,
-    elliptic_curve::sec1::ToEncodedPoint,
+    elliptic_curve::sec1::ToSec1Point,
+    elliptic_curve::Generate,
     pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey},
     PublicKey,
 };
@@ -26,7 +27,7 @@ pub enum Es256Error {
 ///
 /// Returns `(private_key_pkcs8_der, public_key_spki_der)`.
 pub fn generate_keypair() -> Result<(Vec<u8>, Vec<u8>), Es256Error> {
-    let signing_key = SigningKey::random(&mut rand::rngs::OsRng);
+    let signing_key = SigningKey::generate();
     let private_der = signing_key
         .to_pkcs8_der()
         .map_err(|e| Es256Error::Generation(e.to_string()))?
@@ -60,7 +61,7 @@ impl Jwk {
         use p256::PublicKey;
         let public_key = PublicKey::from_public_key_der(spki_der)
             .map_err(|e| Es256Error::InvalidKey(e.to_string()))?;
-        let point = public_key.to_encoded_point(false);
+        let point = public_key.to_sec1_point(false);
         let x = B64URL.encode(
             point
                 .x()
@@ -115,7 +116,7 @@ impl Jwk {
 pub fn spki_der_to_sec1(spki_der: &[u8]) -> Result<Vec<u8>, Es256Error> {
     let public_key = PublicKey::from_public_key_der(spki_der)
         .map_err(|e| Es256Error::InvalidKey(e.to_string()))?;
-    Ok(public_key.to_encoded_point(false).as_bytes().to_vec())
+    Ok(public_key.to_sec1_point(false).as_bytes().to_vec())
 }
 
 /// JWKS response body.

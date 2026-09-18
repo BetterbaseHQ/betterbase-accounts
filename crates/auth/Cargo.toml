@@ -25,5 +25,7 @@ rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+# OPAQUE still binds to the digest 0.10 family; keep a legacy sha2 for its cipher suite
+sha2_legacy = { package = "sha2", version = "0.10" }
 thiserror.workspace = true
 uuid.workspace = true

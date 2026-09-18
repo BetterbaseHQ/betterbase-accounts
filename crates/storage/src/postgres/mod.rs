@@ -16,7 +16,7 @@ mod registration;
 mod user_keys;
 mod verification;
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use sqlx::PgPool;
 

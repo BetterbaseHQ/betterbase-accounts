@@ -31,7 +31,7 @@ struct DefaultCipherSuite;
 
 impl CipherSuite for DefaultCipherSuite {
     type OprfCs = opaque_ke::Ristretto255;
-    type KeyExchange = TripleDh<opaque_ke::Ristretto255, sha2::Sha512>;
+    type KeyExchange = TripleDh<opaque_ke::Ristretto255, sha2_legacy::Sha512>;
     type Ksf = Identity;
 }
 
