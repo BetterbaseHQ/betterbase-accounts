@@ -4,9 +4,9 @@
 FROM node:22-bookworm-slim AS web-builder
 WORKDIR /web
 
-RUN corepack enable pnpm && corepack prepare pnpm@10 --activate
+RUN corepack enable pnpm
 
-COPY web/package.json web/pnpm-lock.yaml ./
+COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY web/ ./
