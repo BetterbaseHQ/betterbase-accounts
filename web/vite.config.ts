@@ -1,28 +1,34 @@
-/// <reference types="vitest" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import compression from "vite-plugin-compression";
+import { compression } from "vite-plugin-compression2";
 import path from "path";
+
+// vitest reads this config too, but under pnpm isolation its UserConfig
+// augmentation binds to its own vite (peer ^6||^7) rather than our vite 8 —
+// so the `test` field is spread in (spreads bypass excess-property checks)
+// instead of relying on module augmentation or @ts-expect-error.
+const test = {
+  globals: true,
+  environment: "node",
+  include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
+};
 
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    compression({ algorithm: "gzip" }),
-    compression({ algorithm: "brotliCompress", ext: ".br" }),
+    // Precompressed assets (.gz + .br, zlib level 9 / brotli 11 by default).
+    // skipIfLargerOrEqual (the default) omits compressed copies that wouldn't
+    // shrink — every emitted artifact stays smaller than its original.
+    compression({ algorithms: ["gzip", "brotliCompress"] }),
   ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
   },
-  // @ts-expect-error vitest config
-  test: {
-    globals: true,
-    environment: "node",
-    include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
-  },
+  ...({ test } as object),
   server: {
     port: 5378,
     strictPort: true,
@@ -52,9 +58,14 @@ export default defineConfig({
     target: "es2022",
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ["react", "react-dom", "react-router-dom"],
-          opaque: ["@serenity-kit/opaque"],
+        // vite 8 bundles with rolldown, which replaces manualChunks with
+        // advancedChunks. Groups match in order — opaque before vendor so the
+        // OPAQUE library isn't swallowed by the generic node_modules group.
+        advancedChunks: {
+          groups: [
+            { name: "opaque", test: /@serenity-kit[\\/]opaque/ },
+            { name: "vendor", test: /[\\/]node_modules[\\/]/ },
+          ],
         },
       },
     },
