@@ -1,18 +1,8 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { compression } from "vite-plugin-compression2";
 import path from "path";
-
-// vitest reads this config too, but under pnpm isolation its UserConfig
-// augmentation binds to its own vite (peer ^6||^7) rather than our vite 8 —
-// so the `test` field is spread in (spreads bypass excess-property checks)
-// instead of relying on module augmentation or @ts-expect-error.
-const test = {
-  globals: true,
-  environment: "node",
-  include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
-};
 
 export default defineConfig({
   plugins: [
@@ -28,7 +18,11 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
-  ...({ test } as object),
+  test: {
+    globals: true,
+    environment: "node",
+    include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
+  },
   server: {
     port: 5378,
     strictPort: true,
