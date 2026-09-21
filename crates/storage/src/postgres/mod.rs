@@ -16,6 +16,9 @@ mod registration;
 mod user_keys;
 mod verification;
 
+#[cfg(test)]
+mod test_support;
+
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use sqlx::PgPool;

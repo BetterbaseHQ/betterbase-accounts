@@ -13,7 +13,7 @@ fmt:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
-# Run tests (no database required — DB tests are skipped without DATABASE_URL)
+# Run tests (DB-backed storage tests skip without DATABASE_URL; use test-db for the enforced real-PostgreSQL gate)
 test *args:
     cargo test --workspace {{args}}
 
@@ -84,13 +84,16 @@ db-start:
 db-down:
     docker rm -f {{_db_container}} 2>/dev/null || true
 
-# Run tests against a real PostgreSQL database
+# Run tests against a real PostgreSQL database (spins up, tests, tears down on success)
+# On failure the container is kept for debugging via `just db-shell`; run `just db-down` to remove.
+# SQLX_OFFLINE compiles via the committed .sqlx metadata (queries still execute
+# live at test time); BB_TEST_REQUIRE_DB makes DB-backed tests fail instead of skip.
 test-db *args:
     #!/usr/bin/env bash
     set -e
     just db-start
     echo "Running tests with DATABASE_URL..."
-    DATABASE_URL="{{_db_url}}" cargo test --workspace {{args}}
+    SQLX_OFFLINE=true BB_TEST_REQUIRE_DB=1 DATABASE_URL="{{_db_url}}" cargo test --workspace {{args}}
     just db-down
 
 # PostgreSQL shell for the test database (must be running)

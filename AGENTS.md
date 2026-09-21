@@ -14,9 +14,9 @@ Part of the [betterbase-dev](https://github.com/BetterbaseHQ/betterbase-dev) orc
 just check            # fmt + lint + test + check-web (standard workflow check)
 just fmt              # cargo fmt --all
 just lint             # cargo clippy --workspace --all-targets -- -D warnings
-just test             # cargo test --workspace (DB tests auto-skip without DATABASE_URL)
+just test             # cargo test --workspace (DB-backed storage tests skip without DATABASE_URL)
 just test-v           # cargo test --workspace -- --nocapture
-just test-db          # Spin up Postgres container, run tests with DATABASE_URL, tear down
+just test-db          # Enforced real-PostgreSQL gate: container up, tests run live (skip = failure), tear down
 just build            # cargo build --workspace
 just build-release    # cargo build --workspace --release
 just build-web        # Build React UI into crates/api/assets/
@@ -121,7 +121,7 @@ All routes are immutable v1 contracts -- paths must not change without a version
 - All crates enforce `#![forbid(unsafe_code)]`
 - Error handling: `thiserror` for domain errors (`StorageError`), `anyhow` for startup/infallible paths
 - Async traits use `async-trait` crate
-- Tests: `#[cfg(test)] mod tests` inline, DB tests skip without `DATABASE_URL`
+- Tests: `#[cfg(test)] mod tests` inline; storage tests use `postgres::test_support::test_storage()` (per-test throwaway schema + migrations) and skip without `DATABASE_URL`, except when `BB_TEST_REQUIRE_DB=1` (set by `just test-db` and CI), where a missing/unreachable DB fails the run. CI provisions PostgreSQL with `DATABASE_URL` set, so storage tests always run there.
 - Workspace edition: 2021, MSRV: 1.88
 
 ## Docker
