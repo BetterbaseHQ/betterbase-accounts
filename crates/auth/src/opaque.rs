@@ -186,6 +186,18 @@ impl OpaqueService {
     }
 }
 
+/// Client-side OPAQUE registration start for integration tests
+/// (`test-support` feature): returns the KE1 bytes that recover/init and
+/// registration endpoints expect in `opaque_request`.
+#[cfg(feature = "test-support")]
+pub fn test_registration_start(password: &[u8]) -> Result<Vec<u8>, OpaqueError> {
+    use opaque_ke::ClientRegistration;
+    let mut rng = OsRng;
+    let client_start = ClientRegistration::<DefaultCipherSuite>::start(&mut rng, password)
+        .map_err(|_| OpaqueError::InvalidKE1)?;
+    Ok(client_start.message.serialize().to_vec())
+}
+
 /// In-process OPAQUE client registration for integration tests
 /// (`test-support` feature): runs a full client round against this
 /// service and returns the registration upload bytes that the API's

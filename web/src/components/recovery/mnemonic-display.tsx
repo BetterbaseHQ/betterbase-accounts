@@ -13,6 +13,8 @@ import {
 interface MnemonicDisplayProps {
   mnemonic: string;
   onContinue: () => void;
+  /** Disable the continue button while an async store is in flight. */
+  disabled?: boolean;
   title?: string;
   description?: string;
   checkboxLabel?: string;
@@ -21,6 +23,7 @@ interface MnemonicDisplayProps {
 export function MnemonicDisplay({
   mnemonic,
   onContinue,
+  disabled = false,
   title = "Recovery Phrase",
   description = "Your account uses advanced encryption. Your 12-word recovery phrase is the only way to recover your account if you forget your password.",
   checkboxLabel = "I have saved my recovery phrase somewhere safe",
@@ -67,7 +70,7 @@ export function MnemonicDisplay({
         </label>
       </CardContent>
       <CardFooter>
-        <Button onClick={onContinue} disabled={!acknowledged} className="w-full">
+        <Button onClick={onContinue} disabled={!acknowledged || disabled} className="w-full">
           Continue
         </Button>
       </CardFooter>
