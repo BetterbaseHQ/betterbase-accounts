@@ -599,7 +599,6 @@ mod session_revocation_tests {
 #[cfg(test)]
 mod blob_fetch_tests {
     use base64::engine::general_purpose::STANDARD as B64;
-    use base64::Engine as _;
     use betterbase_accounts_auth::opaque::test_registration_start;
     use serde_json::json;
 
