@@ -843,8 +843,12 @@ async fn handle_refresh_token_grant(state: &AppState, req: TokenForm) -> Respons
                         grant_id = %grant_id,
                         "refresh token reuse detected (sequential), grant tokens revoked"
                     );
+                    // 400 per RFC 6749 (invalid_grant); the description —
+                    // not the status — carries the reuse signal, so the
+                    // response does not oracle whether a token was once
+                    // valid.
                     return write_oauth_error(
-                        StatusCode::UNAUTHORIZED,
+                        StatusCode::BAD_REQUEST,
                         "invalid_grant",
                         "refresh token reuse detected",
                     );
@@ -919,7 +923,7 @@ async fn handle_refresh_token_grant(state: &AppState, req: TokenForm) -> Respons
         Err(StorageError::RefreshTokenReused { grant_id }) => {
             tracing::warn!(grant_id = %grant_id, "refresh token reuse detected during rotation, grant tokens revoked");
             return write_oauth_error(
-                StatusCode::UNAUTHORIZED,
+                StatusCode::BAD_REQUEST,
                 "invalid_grant",
                 "refresh token reuse detected",
             );

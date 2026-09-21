@@ -540,6 +540,16 @@ pub trait CompositeStorage: Send + Sync {
         wrapped_root_key: &[u8],
     ) -> Result<(), StorageError>;
     /// Atomic root key rotation: update root key + batch update grant keys + update recovery blob.
+    /// Update credentials and revoke all prior sessions atomically
+    /// (AUD-011 review: a crash between the two must not leave a rotated
+    /// password with surviving pre-rotation sessions). Returns the new
+    /// credentials version for minting the completion token.
+    async fn update_credentials_and_revoke_sessions(
+        &self,
+        account_id: Uuid,
+        opaque_record: &[u8],
+        wrapped_root_key: &[u8],
+    ) -> Result<i64, StorageError>;
     async fn rotate_root_key(
         &self,
         account_id: Uuid,

@@ -204,6 +204,7 @@ pub async fn handle_recover_finalize(
     State(state): State<AppState>,
     Json(req): Json<RecoverFinalizeRequest>,
 ) -> Result<Json<AuthResponse>, ApiError> {
+    let mut new_credentials_version: Option<i64> = None;
     let state_id_str = state
         .jwt
         .validate_state_token(&req.state_token)
@@ -230,7 +231,8 @@ pub async fn handle_recover_finalize(
                 }
             })?;
 
-    // Optional new wrapped root key
+    // Optional new wrapped root key. The credentials update and session
+    // revocation commit atomically (AUD-011).
     if !req.wrapped_root_key.is_empty() {
         let new_key = B64
             .decode(&req.wrapped_root_key)
@@ -238,10 +240,16 @@ pub async fn handle_recover_finalize(
         if new_key.len() != 41 {
             return Err(ApiError::bad_request("wrapped_root_key must be 41 bytes"));
         }
-        state
-            .storage
-            .update_registration_and_root_key(reg_state.account_id, &opaque_record_final, &new_key)
-            .await?;
+        new_credentials_version = Some(
+            state
+                .storage
+                .update_credentials_and_revoke_sessions(
+                    reg_state.account_id,
+                    &opaque_record_final,
+                    &new_key,
+                )
+                .await?,
+        );
     } else {
         state
             .storage
@@ -249,21 +257,30 @@ pub async fn handle_recover_finalize(
             .await?;
     }
 
-    // Optional new recovery blob (best-effort)
+    // Optional new recovery blob. A failed store propagates (review of
+    // AUD-016): silently keeping the previous blob would present a false
+    // recovery path that decrypts to the retired root.
     if !req.new_blob.is_empty() {
-        let _ = state
+        state
             .storage
             .store_recovery_blob(reg_state.account_id, req.new_blob.as_bytes())
-            .await;
+            .await?;
     }
 
     // AUD-011: recovery re-credentials the account — revoke prior
     // sessions (refresh families deleted, pre-rotation auth JWTs fenced)
-    // and mint the completion token under the new version.
-    let new_version = state
-        .storage
-        .revoke_account_sessions(reg_state.account_id)
-        .await?;
+    // and mint the completion token under the new version. When the
+    // finalize carried a new wrapped root, the atomic credentials update
+    // already revoked; otherwise revoke standalone.
+    let new_version = match new_credentials_version {
+        Some(v) => v,
+        None => {
+            state
+                .storage
+                .revoke_account_sessions(reg_state.account_id)
+                .await?
+        }
+    };
     let auth_token = state
         .jwt
         .create_auth_token(&reg_state.account_id.to_string(), new_version)

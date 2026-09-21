@@ -6,7 +6,8 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-const { resolveScopedKey, resolveAppKeypair } = await import("@/lib/consent-keys");
+const { fetchGrantKeyInfo, resolveScopedKey, resolveAppKeypair } =
+  await import("@/lib/consent-keys");
 
 // The crypto layer is exercised elsewhere; here it is stubbed to keep the
 // matrix deterministic (node env has no btoa/atob-independent guarantee).
@@ -47,7 +48,7 @@ describe("resolveScopedKey (AUD-008)", () => {
         wrapped_scoped_key: "QUFB", // btoa("AAA")
       })),
     };
-    const result = await resolveScopedKey(api, "client", rootKey);
+    const result = await resolveScopedKey(await fetchGrantKeyInfo(api, "client"), rootKey);
     expect(result.wrappedScopedKeyB64).toBe("QUFB");
   });
 
@@ -57,7 +58,9 @@ describe("resolveScopedKey (AUD-008)", () => {
         throw new Error("network down");
       }),
     };
-    await expect(resolveScopedKey(api, "client", rootKey)).rejects.toThrow(/retry/i);
+    // The shared fetch propagates the read failure; the consent page
+    // fails closed before either resolver can generate anything.
+    await expect(fetchGrantKeyInfo(api, "client")).rejects.toThrow(/network down/);
   });
 
   it("fails closed when the stored wrapper cannot be unwrapped", async () => {
@@ -68,60 +71,33 @@ describe("resolveScopedKey (AUD-008)", () => {
         wrapped_scoped_key: btoa(String.fromCharCode(0xff, 0x01)),
       })),
     };
-    await expect(resolveScopedKey(api, "client", rootKey)).rejects.toThrow(/strand/i);
+    await expect(resolveScopedKey(await fetchGrantKeyInfo(api, "client"), rootKey)).rejects.toThrow(
+      /strand/i,
+    );
   });
 
   it("generates only on explicit absence", async () => {
-    const api = {
-      getGrantKeypairBlob: vi.fn(async () => ({
-        app_keypair_blob: "",
-      })),
-    };
-    const result = await resolveScopedKey(api, "client", rootKey);
+    const result = await resolveScopedKey({ app_keypair_blob: "" }, rootKey);
     expect(result.wrappedScopedKeyB64).toBe(btoa(String.fromCharCode(5, 5, 5)));
   });
 });
 
 describe("resolveAppKeypair (AUD-008)", () => {
   it("recovers the stored keypair", async () => {
-    const api = {
-      getGrantKeypairBlob: vi.fn(async () => ({
-        app_keypair_blob: "good",
-      })),
-    };
-    const kp = await resolveAppKeypair(api, "client", {} as CryptoKey);
+    const kp = await resolveAppKeypair({ app_keypair_blob: "good" }, {} as CryptoKey);
     expect(kp.publicKeyJwk.x).toBe("stored");
   });
 
-  it("fails closed when the read fails", async () => {
-    const api = {
-      getGrantKeypairBlob: vi.fn(async () => {
-        throw new Error("network down");
-      }),
-    };
-    await expect(resolveAppKeypair(api, "client", {} as CryptoKey)).rejects.toThrow(
-      /signing identity/i,
-    );
-  });
-
   it("fails closed when the stored blob cannot be decrypted", async () => {
-    const api = {
-      getGrantKeypairBlob: vi.fn(async () => ({
-        app_keypair_blob: "bad",
-      })),
-    };
-    await expect(resolveAppKeypair(api, "client", {} as CryptoKey)).rejects.toThrow(
+    await expect(resolveAppKeypair({ app_keypair_blob: "bad" }, {} as CryptoKey)).rejects.toThrow(
       /signing identity/i,
     );
   });
 
   it("fails closed when the stored keypair is malformed", async () => {
-    const api = {
-      getGrantKeypairBlob: vi.fn(async () => ({
-        app_keypair_blob: "wrong-shape",
-      })),
-    };
-    await expect(resolveAppKeypair(api, "client", {} as CryptoKey)).rejects.toThrow(/malformed/i);
+    await expect(
+      resolveAppKeypair({ app_keypair_blob: "wrong-shape" }, {} as CryptoKey),
+    ).rejects.toThrow(/malformed/i);
   });
 
   it("generates only on explicit absence", async () => {

@@ -48,6 +48,21 @@ impl OAuthGrantStorage for PostgresStorage {
         account_id: Uuid,
         scope: &str,
     ) -> Result<OAuthGrant, StorageError> {
+        // AUD-009 review: serialize grant creation against root rotation
+        // (which locks the account row before checking grant-set
+        // completeness) so a new grant cannot commit mid-rotation and end
+        // up wrapped under the retired root.
+        let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+        let locked = sqlx::query_scalar!(
+            "SELECT id FROM accounts WHERE id = $1 FOR UPDATE",
+            account_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StorageError::from)?;
+        if locked.is_none() {
+            return Err(StorageError::AccountNotFound);
+        }
         let row = sqlx::query_as!(
             OAuthGrantRow,
             r#"
@@ -63,9 +78,10 @@ impl OAuthGrantStorage for PostgresStorage {
             account_id,
             scope,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(StorageError::from)?;
+        tx.commit().await.map_err(StorageError::from)?;
 
         Ok(row.into())
     }
@@ -267,7 +283,10 @@ impl OAuthGrantStorage for PostgresStorage {
         .ok_or(StorageError::OAuthGrantNotFound)?;
 
         let outcome = match stored.as_deref() {
-            None => {
+            // An empty stored wrapper is an absent one (legacy rows /
+            // server pre-history) — treating it as occupied would 409-loop
+            // against a client that correctly reads it as absent.
+            None | Some(&[]) => {
                 sqlx::query!(
                     r#"
                     UPDATE oauth_grants

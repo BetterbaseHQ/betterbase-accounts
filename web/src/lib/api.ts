@@ -29,7 +29,9 @@ async function parseErrorMessage(response: Response): Promise<string> {
 
   try {
     const error = JSON.parse(text) as ErrorPayload;
-    return error.error || error.error_description || text;
+    // Prefer the human guidance ("...retry consent") over the machine code
+    // ("invalid_grant_state") when both are present.
+    return error.error_description || error.error || text;
   } catch {
     return text;
   }

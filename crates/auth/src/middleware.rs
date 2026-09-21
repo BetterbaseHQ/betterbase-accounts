@@ -23,49 +23,12 @@ pub fn extract_bearer_token(header: &str) -> Option<&str> {
     header.strip_prefix("Bearer ")
 }
 
-/// Axum middleware that validates the `Authorization: Bearer <auth_token>` header.
-///
-/// On success, inserts [`AuthContext`] into request extensions.
-/// On failure, returns 401.
-pub async fn auth_middleware(
-    State(jwt): State<Arc<JwtService>>,
-    mut req: Request<Body>,
-    next: Next,
-) -> Response {
-    let auth_header = req
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
+// The unfenced `auth_middleware` was removed (AUD-011 review): it
+// validated auth JWTs without the credentials_version check and was
+// wired into no router — wiring it up later would silently reintroduce
+// the vulnerability extract_auth now prevents. Route handlers use
+// `crate::handlers::auth::extract_auth`.
 
-    let token = match auth_header.and_then(extract_bearer_token) {
-        Some(t) => t,
-        None => {
-            return (StatusCode::UNAUTHORIZED, "authorization required").into_response();
-        }
-    };
-
-    let claims = match jwt.validate_auth_token(token) {
-        Ok(c) => c,
-        Err(e) => {
-            let msg = if matches!(e, crate::jwt::JwtError::TokenExpired) {
-                "token expired"
-            } else {
-                "invalid token"
-            };
-            return (StatusCode::UNAUTHORIZED, msg).into_response();
-        }
-    };
-
-    let account_id = match Uuid::parse_str(&claims.sub) {
-        Ok(id) => id,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid token").into_response(),
-    };
-
-    req.extensions_mut().insert(AuthContext { account_id });
-    next.run(req).await
-}
-
-/// Axum middleware for OAuth bearer tokens (ES256 access tokens).
 pub async fn oauth_auth_middleware(
     State(jwt): State<Arc<JwtService>>,
     mut req: Request<Body>,

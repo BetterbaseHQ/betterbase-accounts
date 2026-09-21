@@ -30,6 +30,15 @@ export interface GrantKeyInfo {
   wrapped_scoped_key?: string;
 }
 
+/**
+ * Fetch the grant's stored key info once per consent submit; both the
+ * scoped-key and app-keypair resolutions consume this snapshot so they
+ * cannot observe different grant states (review of AUD-008).
+ */
+export async function fetchGrantKeyInfo(api: GrantKeyApi, clientId: string): Promise<GrantKeyInfo> {
+  return api.getGrantKeypairBlob(clientId);
+}
+
 export interface ResolvedScopedKey {
   /** The scoped key the grant will use. */
   scopedKey: Uint8Array;
@@ -53,24 +62,14 @@ export function base64DecodeToBytes(b64: string): Uint8Array {
 }
 
 /**
- * Resolve the grant's scoped key. Throws on read failure or when the
- * stored wrapper cannot be unwrapped under the current root key.
+ * Resolve the grant's scoped key. Throws when the stored wrapper cannot
+ * be unwrapped under the current root key (the shared snapshot fetch
+ * already failed closed on read errors).
  */
 export async function resolveScopedKey(
-  api: GrantKeyApi,
-  clientId: string,
+  info: GrantKeyInfo,
   rootKey: Uint8Array,
 ): Promise<ResolvedScopedKey> {
-  let info: GrantKeyInfo;
-  try {
-    info = await api.getGrantKeypairBlob(clientId);
-  } catch (err) {
-    throw new Error(
-      `Could not read the existing grant key material for this app (${err instanceof Error ? err.message : String(err)}). ` +
-        "Generating a replacement scoped key would strand data already encrypted under the existing one — please retry.",
-    );
-  }
-
   if (info.wrapped_scoped_key) {
     let scopedKey: Uint8Array;
     try {
@@ -102,20 +101,9 @@ export interface ResolvedAppKeypair {
  * and edit-chain continuity.
  */
 export async function resolveAppKeypair(
-  api: GrantKeyApi,
-  clientId: string,
+  info: GrantKeyInfo,
   wrappingKey: CryptoKey,
 ): Promise<ResolvedAppKeypair> {
-  let info: GrantKeyInfo;
-  try {
-    info = await api.getGrantKeypairBlob(clientId);
-  } catch (err) {
-    throw new Error(
-      `Could not read the existing app signing key (${err instanceof Error ? err.message : String(err)}). ` +
-        "Refusing to generate a replacement — that would destroy this app's signing identity.",
-    );
-  }
-
   if (info.app_keypair_blob) {
     let decrypted: JsonWebKey;
     try {

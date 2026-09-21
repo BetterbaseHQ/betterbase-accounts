@@ -91,6 +91,20 @@ pub async fn handle_update_grant_wrapped_keys(
 ) -> Result<StatusCode, ApiError> {
     let auth_ctx = extract_auth(&state, &headers).await?;
 
+    // AUD-009 review: fence the rewrap against root rotations — wrappers
+    // prepared under an older root must not overwrite a newer rotation's
+    // rewraps.
+    let (_, current_version) = state
+        .storage
+        .get_root_key_with_version(auth_ctx.account_id)
+        .await?;
+    if current_version != req.expected_root_version {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "root key changed since these wrappers were prepared — re-read and retry",
+        ));
+    }
+
     let mut updates = Vec::with_capacity(req.grants.len());
     for update in &req.grants {
         let grant_id = Uuid::parse_str(&update.grant_id)

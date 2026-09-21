@@ -15,10 +15,15 @@ impl CompositeStorage for PostgresStorage {
     ) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
 
+        // AUD-009 review: the wrapped root changes here (password change /
+        // recovery re-wrap), so the root key version must advance — a
+        // rotation prepared against the previous snapshot must not be able
+        // to commit its older wrapped root over this write afterwards.
         let rows = sqlx::query!(
             r#"
             UPDATE accounts
-            SET opaque_record = $2, wrapped_root_key = $3
+            SET opaque_record = $2, wrapped_root_key = $3,
+                root_key_version = root_key_version + 1, updated_at = NOW()
             WHERE id = $1
             "#,
             account_id,
@@ -38,6 +43,44 @@ impl CompositeStorage for PostgresStorage {
         Ok(())
     }
 
+    async fn update_credentials_and_revoke_sessions(
+        &self,
+        account_id: Uuid,
+        opaque_record: &[u8],
+        wrapped_root_key: &[u8],
+    ) -> Result<i64, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+        let new_version = sqlx::query_scalar!(
+            r#"
+            UPDATE accounts
+            SET opaque_record = $2,
+                wrapped_root_key = $3,
+                credentials_version = credentials_version + 1,
+                root_key_version = root_key_version + 1,
+                updated_at = NOW()
+            WHERE id = $1
+            RETURNING credentials_version
+            "#,
+            account_id,
+            opaque_record,
+            wrapped_root_key,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StorageError::from)?
+        .map(i64::from)
+        .ok_or(StorageError::AccountNotFound)?;
+        sqlx::query!(
+            "DELETE FROM oauth_refresh_tokens WHERE grant_id IN (SELECT id FROM oauth_grants WHERE account_id = $1)",
+            account_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StorageError::from)?;
+        tx.commit().await.map_err(StorageError::from)?;
+        Ok(new_version)
+    }
+
     async fn rotate_root_key(
         &self,
         account_id: Uuid,
@@ -47,6 +90,23 @@ impl CompositeStorage for PostgresStorage {
         recovery_blob: &[u8],
     ) -> Result<i64, StorageError> {
         let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+
+        // AUD-009 review: row locks do not cover rows that do not exist
+        // yet, and PostgreSQL has no predicate locking under READ
+        // COMMITTED. Locking the account row serializes this rotation
+        // against grant creation (get_or_create_oauth_grant takes the
+        // same lock), so a new grant cannot slip between the completeness
+        // check and the commit.
+        let locked = sqlx::query_scalar!(
+            "SELECT id FROM accounts WHERE id = $1 FOR UPDATE",
+            account_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StorageError::from)?;
+        if locked.is_none() {
+            return Err(StorageError::AccountNotFound);
+        }
 
         // AUD-009: lock the account's full grant set first so the
         // completeness check below cannot interleave with a concurrent

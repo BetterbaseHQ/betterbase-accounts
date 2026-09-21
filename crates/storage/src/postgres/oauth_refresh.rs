@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_reuse_revokes_family_despite_duplicate_insert_abort() {
+    async fn concurrent_presenters_of_one_token_one_family_revoked() {
         let Some(storage) = test_storage().await else {
             return;
         };
@@ -269,30 +269,27 @@ mod tests {
         let t1 = record(grant.id, 1);
         storage.create_refresh_token(&t1).await.expect("create t1");
 
-        // First rotation wins.
+        // Two rotations of the SAME token in flight at once (post-fix the
+        // duplicate used-hash is detected via ON CONFLICT rows_affected,
+        // not an aborting INSERT): exactly one may win; the loser's
+        // conflict must revoke the family including the winner's token.
         let t2 = record(grant.id, 2);
-        storage
-            .rotate_refresh_token(t1.id, &t1.token_hash, grant.id, &t2)
-            .await
-            .expect("rotate");
-
-        // A concurrent presenter of the same token records the duplicate
-        // hash inside its transaction: the 23505 aborts that transaction,
-        // and the family-revoking DELETE must still take effect. Pre-fix,
-        // the DELETE failed with 25P02 and rolled everything back.
-        let t4 = record(grant.id, 4);
-        let err = storage
-            .rotate_refresh_token(t1.id, &t1.token_hash, grant.id, &t4)
-            .await
-            .expect_err("concurrent reuse must fail");
-        assert!(
-            matches!(err, StorageError::RefreshTokenReused { .. }),
-            "expected RefreshTokenReused, got: {err:?}"
+        let t3 = record(grant.id, 3);
+        let (r1, r2) = tokio::join!(
+            storage.rotate_refresh_token(t1.id, &t1.token_hash, grant.id, &t2),
+            storage.rotate_refresh_token(t1.id, &t1.token_hash, grant.id, &t3),
         );
-        assert!(matches!(
-            storage.get_refresh_token_by_hash(&t2.token_hash).await,
-            Err(StorageError::RefreshTokenNotFound)
-        ));
+        let ok_count = usize::from(r1.is_ok()) + usize::from(r2.is_ok());
+        assert_eq!(ok_count, 1, "results: {r1:?} {r2:?}");
+        // Whichever token the winner created is gone — the family was
+        // revoked by the loser's conflict detection.
+        for t in [&t2, &t3] {
+            let found = storage
+                .get_refresh_token_by_hash(&t.token_hash)
+                .await
+                .is_ok();
+            assert!(!found, "family must be fully revoked");
+        }
     }
 
     #[tokio::test]

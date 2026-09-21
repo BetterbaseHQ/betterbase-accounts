@@ -54,6 +54,7 @@ export function RecoverySetupPage() {
   }
 
   const handleContinue = async () => {
+    if (!rootKey) return;
     // AUD-016: activate the new recovery secret only after the user has
     // confirmed saving the phrase. Until this write lands, the previous
     // recovery path (old phrase / password / device) stays intact. The
@@ -63,7 +64,7 @@ export function RecoverySetupPage() {
     setStoring(true);
     try {
       const recoveryKey = await deriveRecoveryKey(mnemonic);
-      const blob = await encryptRootKey(rootKey!, recoveryKey);
+      const blob = await encryptRootKey(rootKey, recoveryKey);
       await api.storeRecoveryBlob(JSON.stringify(blob));
     } catch (err) {
       setError(formatError(err, "Failed to set up recovery"));
@@ -82,7 +83,11 @@ export function RecoverySetupPage() {
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center p-4">
-      {error && <p className="mb-4 text-destructive">{error}</p>}
+      {error && (
+        <p role="alert" className="mb-4 text-destructive">
+          {error}
+        </p>
+      )}
       <MnemonicDisplay
         mnemonic={mnemonic}
         onContinue={handleContinue}

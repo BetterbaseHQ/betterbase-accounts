@@ -244,6 +244,7 @@ describe("API client", () => {
 
         await api.rotateRootKey(
           "new-wmk",
+          3,
           [{ grant_id: "g-1", wrapped_scoped_key: "wsk" }],
           "recovery-blob",
         );
@@ -251,6 +252,8 @@ describe("API client", () => {
         const call = mockFetch.mock.calls[0];
         const body = JSON.parse(call[1].body);
         expect(body.wrapped_root_key).toBe("new-wmk");
+        expect(body.expected_root_version).toBe(3);
+        expect(body.grants).toEqual([{ grant_id: "g-1", wrapped_scoped_key: "wsk" }]);
         expect(body.recovery_blob).toBe("recovery-blob");
       });
     });
@@ -392,8 +395,8 @@ describe("API client", () => {
           JSON.stringify({ error: "invalid_request", error_description: "Missing parameter" }),
       });
 
-      // The error field is extracted first
-      await expect(api.oauthConsent("state", true)).rejects.toThrow("invalid_request");
+      // The human guidance is preferred over the machine code
+      await expect(api.oauthConsent("state", true)).rejects.toThrow("Missing parameter");
     });
 
     it("extracts error_description when error is not present", async () => {

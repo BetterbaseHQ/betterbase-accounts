@@ -240,6 +240,10 @@ pub struct GrantKeyUpdate {
 #[derive(Debug, Deserialize)]
 pub struct UpdateGrantWrappedKeysRequest {
     pub grants: Vec<GrantKeyUpdate>,
+    /// Root key version the rewraps were prepared against; a mismatch
+    /// rejects the update (AUD-009 review: this endpoint could otherwise
+    /// push pre-rotation wrappers back over a completed rotation).
+    pub expected_root_version: i64,
 }
 
 #[derive(Debug, Deserialize)]

@@ -21,6 +21,7 @@ import {
 } from "@/lib/crypto";
 import type { ScopedKeyJWK } from "@/lib/crypto";
 import {
+  fetchGrantKeyInfo,
   resolveScopedKey,
   resolveAppKeypair,
   appWrappingKey,
@@ -163,10 +164,12 @@ export function ConsentPage() {
         }
 
         // AUD-008: resolve the scoped key and app keypair through
-        // fail-closed helpers. A transient read failure or an undecryptable
-        // existing blob throws — it must never silently generate
-        // replacement key material over an existing grant.
-        const resolved = await resolveScopedKey(api, clientId, rootKey);
+        // fail-closed helpers over a SINGLE grant snapshot. A transient
+        // read failure or an undecryptable existing blob throws — it must
+        // never silently generate replacement key material over an
+        // existing grant.
+        const grantInfo = await fetchGrantKeyInfo(api, clientId);
+        const resolved = await resolveScopedKey(grantInfo, rootKey);
         // Always submit the wrapped form alongside the keypair: the server
         // installs the bundle only when it matches the stored wrapper (or
         // the grant is empty), atomically rejecting stale-read races.
@@ -175,7 +178,7 @@ export function ConsentPage() {
         const kid = await computeScopedKeyKid(resolved.scopedKey);
 
         const wrappingKey = await appWrappingKey(resolved.scopedKey, userId, clientId);
-        const { publicKeyJwk, privateKeyJwk } = await resolveAppKeypair(api, clientId, wrappingKey);
+        const { publicKeyJwk, privateKeyJwk } = await resolveAppKeypair(grantInfo, wrappingKey);
 
         // Encrypt the private key as a blob for server storage
         appKeypairBlob = await encryptAppKeypairBlob(privateKeyJwk, wrappingKey);
