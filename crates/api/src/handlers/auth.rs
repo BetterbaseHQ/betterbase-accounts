@@ -58,18 +58,23 @@ pub async fn handle_password_init(
     // signup (those accounts must recover instead of re-register). The storage
     // layer enforces the same invariant under concurrency. This check runs
     // before the JTI is consumed so a rejected username choice does not burn
-    // the email verification.
+    // the email verification. Fail closed on storage errors — a transient
+    // failure must not silently skip the check.
     let canonical_email = betterbase_accounts_core::email::canonicalize_email(&req.email);
     let canonical_username =
         betterbase_accounts_core::username::canonicalize_username(&req.username);
-    if let Ok(existing) = state
+    match state
         .storage
         .get_account_by_username(&state.config.issuer, &canonical_username)
         .await
     {
-        if existing.email != canonical_email || existing.opaque_record.is_some() {
-            return Err(ApiError::conflict("username already taken"));
+        Ok(existing) => {
+            if existing.email != canonical_email || existing.opaque_record.is_some() {
+                return Err(ApiError::conflict("username already taken"));
+            }
         }
+        Err(StorageError::AccountNotFound) => {}
+        Err(e) => return Err(ApiError::from(e)),
     }
 
     // Consume JTI (one-time-use)
@@ -557,6 +562,66 @@ mod tests {
                 "username": "freshuser",
                 "email": "fresh@example.test",
                 "verification_token": token,
+                "opaque_request": B64.encode(b"junk"),
+                "cap_token": "",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "invalid verification token");
+    }
+
+    #[tokio::test]
+    async fn password_init_matches_the_verification_email_across_casing() {
+        // The token/email comparison is canonical (domain casing normalized;
+        // Gmail local-part folding): a user verifying "mixed@EXAMPLE.test"
+        // must be able to submit the lowercase form — and a genuinely
+        // different email must still reject.
+        let Some(app) = test_app().await else {
+            return;
+        };
+        let token = app
+            .jwt
+            .create_verification_token(
+                "mixed@EXAMPLE.test",
+                betterbase_accounts_core::purpose::REGISTRATION,
+            )
+            .expect("token");
+
+        let (status, body) = post_json(
+            &app,
+            "/v1/accounts/password/init",
+            None,
+            &json!({
+                "username": "mixedcase",
+                "email": "mixed@example.test",
+                "verification_token": token,
+                "opaque_request": B64.encode(b"junk"),
+                "cap_token": "",
+            }),
+        )
+        .await;
+        // Canonical match: passes binding and reservation checks, fails
+        // only at OPAQUE decoding of junk bytes.
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "invalid OPAQUE request");
+
+        // A genuinely different email still fails binding.
+        let token2 = app
+            .jwt
+            .create_verification_token(
+                "mixed@example.test",
+                betterbase_accounts_core::purpose::REGISTRATION,
+            )
+            .expect("token2");
+        let (status, body) = post_json(
+            &app,
+            "/v1/accounts/password/init",
+            None,
+            &json!({
+                "username": "mixedcase2",
+                "email": "other@example.test",
+                "verification_token": token2,
                 "opaque_request": B64.encode(b"junk"),
                 "cap_token": "",
             }),

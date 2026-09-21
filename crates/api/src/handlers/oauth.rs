@@ -1364,12 +1364,14 @@ mod consent_tests {
     use axum::http::StatusCode;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
     use serde_json::json;
+    use tower::ServiceExt;
 
     use crate::test_support::{get_json, post_json, test_app, TestApp, TEST_ISSUER};
 
     use super::*;
 
     const REDIRECT_URI: &str = "http://localhost:5381/";
+    const REDIRECT_URI_ENC: &str = "http%3A%2F%2Flocalhost%3A5381%2F";
 
     fn keys_jwk() -> serde_json::Value {
         json!({
@@ -1391,6 +1393,64 @@ mod consent_tests {
             // SHA-256 over {"crv":"P-256","kty":"EC","x":"AQEB...","y":"AgIC..."}
             "kOFKxjJdOqJD5G4Yuw-cxHe64VGyxKEO_hoV83QfGj0"
         );
+    }
+
+    #[tokio::test]
+    async fn authorize_redirect_carries_only_the_signed_state_token() {
+        // AUD-005: the consent URL must contain ONLY the signed `oauth`
+        // token — reintroducing unsigned params (client name, keys, scope)
+        // would let them be spoofed on the consent page.
+        let Some(app) = test_app().await else {
+            return;
+        };
+        let client_id = Uuid::new_v4();
+        app.storage
+            .create_oauth_client(&OAuthClient {
+                id: client_id,
+                name: "Spoofable Name".to_owned(),
+                secret_hash: None,
+                redirect_uris: vec![REDIRECT_URI.to_owned()],
+                allowed_scopes: vec!["openid".to_owned(), "sync".to_owned()],
+                created_at: chrono::Utc::now(),
+            })
+            .await
+            .expect("create client");
+
+        let uri = format!(
+            "/oauth/authorize?client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}&response_type=code&scope=openid%20sync&state=client-state&code_challenge=challenge&code_challenge_method=S256"
+        );
+        let request = axum::http::Request::builder()
+            .method("GET")
+            .uri(&uri)
+            .body(axum::body::Body::empty())
+            .expect("build request");
+        let response = app.router.clone().oneshot(request).await.expect("dispatch");
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .expect("location header")
+            .to_owned();
+
+        let (base, query) = location.split_once('?').expect("consent query");
+        assert!(
+            base.ends_with("/consent"),
+            "unexpected consent base: {base}"
+        );
+        let pairs: Vec<(String, String)> = form_urlencoded::parse(query.as_bytes())
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(
+            pairs.len(),
+            1,
+            "consent redirect must carry exactly one param: {location}"
+        );
+        assert_eq!(pairs[0].0, "oauth");
+        // The token is a signed JWT (three segments), not a passthrough of
+        // any client-supplied value.
+        assert_eq!(pairs[0].1.split('.').count(), 3);
     }
 
     #[tokio::test]

@@ -7,7 +7,7 @@ use betterbase_accounts_core::{
     purpose,
     username::validate_username,
 };
-use betterbase_accounts_storage::{AccountStorage, StorageError};
+use betterbase_accounts_storage::StorageError;
 
 use crate::{error::ApiError, state::AppState, verification};
 
@@ -31,27 +31,9 @@ pub async fn handle_send_verification_code(
                 .map_err(|_| ApiError::bad_request("invalid username"))?;
 
             let canonical_email = canonicalize_email(&req.email);
-            let canonical_username =
-                betterbase_accounts_core::username::canonicalize_username(&req.username);
 
-            // Check availability — return 204 without sending if not available
-            // (the error will surface at registration time)
-            let by_email = state
-                .storage
-                .get_account_by_email(&state.config.issuer, &canonical_email)
-                .await;
-            let by_username = state
-                .storage
-                .get_account_by_username(&state.config.issuer, &canonical_username)
-                .await;
-
-            // If there's an existing registered account with that email, send
-            // an "already registered" notice instead of a code.
-            // For MVP: just proceed with sending the code regardless.
-            // Conflict will be caught at finalize time.
-            let _ = by_email;
-            let _ = by_username;
-
+            // Availability is enforced at registration time (password/init
+            // pre-check + storage invariants); send the code regardless.
             verification::send_code(&state, &canonical_email, purpose::REGISTRATION)
                 .await
                 .map_err(|e| match e {

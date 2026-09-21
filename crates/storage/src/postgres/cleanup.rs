@@ -114,7 +114,10 @@ mod tests {
             .await
             .expect("backdate");
 
-        // Fresh reservation (still within the funnel) and a registered account.
+        // Fresh reservation (still within the funnel) and a registered
+        // account. The registered account is backdated TOO — the
+        // `opaque_record IS NULL` predicate must be the only thing
+        // protecting it, pinning that the cleanup never reaps real accounts.
         let fresh = storage
             .get_or_create_account(TEST_ISSUER, "fresh", "fresh@example.com")
             .await
@@ -124,6 +127,11 @@ mod tests {
             .finalize_registration(registered.id, b"record")
             .await
             .expect("register");
+        sqlx::query("UPDATE accounts SET created_at = NOW() - INTERVAL '8 days' WHERE id = $1")
+            .bind(registered.id)
+            .execute(storage.pool())
+            .await
+            .expect("backdate registered account past the cutoff");
 
         storage
             .cleanup_unregistered_accounts(Duration::from_secs(7 * 24 * 3600))

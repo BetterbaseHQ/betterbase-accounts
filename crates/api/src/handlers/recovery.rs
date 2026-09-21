@@ -295,6 +295,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recover_init_rejects_malformed_email_with_bad_request() {
+        // Unauthenticated endpoint: a missing "@" must produce a clean 400,
+        // never a panic (worker-killing DoS vector).
+        let Some(app) = test_app().await else {
+            return;
+        };
+        let token = app
+            .jwt
+            .create_verification_token(
+                "someone@example.test",
+                betterbase_accounts_core::purpose::RECOVERY,
+            )
+            .expect("token");
+
+        let (status, body) = post_json(
+            &app,
+            "/v1/accounts/recover/init",
+            None,
+            &json!({
+                "email": "no-at-sign-example",
+                "verification_token": token,
+                "opaque_request": B64.encode(b"junk"),
+                "cap_token": "",
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "invalid email");
+    }
+
+    #[tokio::test]
     async fn recover_init_rejects_token_issued_for_a_different_email() {
         let Some(app) = test_app().await else {
             return;
