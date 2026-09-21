@@ -171,12 +171,14 @@ export function RecoverPage() {
     );
 
     // Step 6: Store auth in context with new export key and recovered root key
+    const rootKeyInfo = await api.getRootKey(finalResponse.auth_token);
     setAuth(
       finalResponse.auth_token,
       finalResponse.user_id,
       recoveryState.email,
       newExportKeyBytes,
       recoveryState.rootKey,
+      rootKeyInfo.root_key_version,
     );
 
     // Step 7: Redirect to recovery setup to save new recovery phrase

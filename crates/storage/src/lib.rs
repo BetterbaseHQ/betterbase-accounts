@@ -344,6 +344,10 @@ pub enum ConsentKeyInstall {
     /// The grant's stored wrapped scoped key differs from the submitted
     /// one — the client acted on stale or absent state and must retry.
     Conflict,
+    /// The account's root key has been rotated since the client derived
+    /// its key material — the submission is wrapped under a retired
+    /// root and must be re-derived after re-authentication.
+    StaleRoot,
 }
 
 #[async_trait]
@@ -390,7 +394,18 @@ pub trait OAuthGrantStorage: Send + Sync {
         wrapped_scoped_key: &[u8],
         public_key: &serde_json::Value,
         blob: &str,
+        expected_root_version: i64,
     ) -> Result<ConsentKeyInstall, StorageError>;
+    /// Updates the wrapped scoped key only if the account's current root
+    /// key version matches `expected_root_version`.
+    /// Returns `StorageError::VersionConflict` on a stale root.
+    async fn update_grant_wrapped_scoped_key_root_checked(
+        &self,
+        grant_id: Uuid,
+        wrapped_scoped_key: &[u8],
+        expected_root_version: i64,
+    ) -> Result<(), StorageError>;
+
     async fn update_grant_wrapped_scoped_key(
         &self,
         grant_id: Uuid,

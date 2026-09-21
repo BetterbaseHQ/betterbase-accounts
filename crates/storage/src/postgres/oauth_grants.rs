@@ -271,6 +271,7 @@ impl OAuthGrantStorage for PostgresStorage {
         wrapped_scoped_key: &[u8],
         public_key: &serde_json::Value,
         blob: &str,
+        expected_root_version: i64,
     ) -> Result<crate::ConsentKeyInstall, StorageError> {
         let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
         let stored = sqlx::query_scalar!(
@@ -281,6 +282,26 @@ impl OAuthGrantStorage for PostgresStorage {
         .await
         .map_err(StorageError::from)?
         .ok_or(StorageError::OAuthGrantNotFound)?;
+
+        // AUD-008/009 residual: the account's committed root version is
+        // read AFTER the grant row lock (rotation locks the account row
+        // first, then grants — this ordering cannot deadlock, and a
+        // rotation that committed before this point is visible here).
+        // A client that derived under an older root would strand this
+        // grant under a key nobody can unwrap anymore.
+        let current_root_version = sqlx::query_scalar!(
+            "SELECT root_key_version FROM accounts WHERE id =              (SELECT account_id FROM oauth_grants WHERE id = $1)",
+            grant_id
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(StorageError::from)?;
+        if current_root_version != expected_root_version as i32 {
+            // Roll back the grant lock and report the stale root; no key
+            // material is written.
+            tx.rollback().await.map_err(StorageError::from)?;
+            return Ok(crate::ConsentKeyInstall::StaleRoot);
+        }
 
         let outcome = match stored.as_deref() {
             // An empty stored wrapper is an absent one (legacy rows /
@@ -345,6 +366,36 @@ impl OAuthGrantStorage for PostgresStorage {
         .execute(&self.pool)
         .await
         .map_err(StorageError::from)?;
+        Ok(())
+    }
+
+    async fn update_grant_wrapped_scoped_key_root_checked(
+        &self,
+        grant_id: Uuid,
+        wrapped_scoped_key: &[u8],
+        expected_root_version: i64,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+        let current = sqlx::query_scalar!(
+            "SELECT root_key_version FROM accounts WHERE id =              (SELECT account_id FROM oauth_grants WHERE id = $1)",
+            grant_id
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(StorageError::from)?;
+        if current != expected_root_version as i32 {
+            tx.rollback().await.map_err(StorageError::from)?;
+            return Err(StorageError::RootKeyVersionConflict);
+        }
+        sqlx::query!(
+            "UPDATE oauth_grants SET wrapped_scoped_key = $2 WHERE id = $1",
+            grant_id,
+            wrapped_scoped_key,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StorageError::from)?;
+        tx.commit().await.map_err(StorageError::from)?;
         Ok(())
     }
 

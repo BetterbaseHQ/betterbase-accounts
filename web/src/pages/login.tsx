@@ -61,7 +61,14 @@ export function LoginPage() {
     const rootKey = await unwrapRootKey(wrappedRootKey, wrappingKey);
 
     // Store auth token, export key, and root key in context
-    setAuth(finalResponse.auth_token, finalResponse.user_id, username, exportKeyBytes, rootKey);
+    setAuth(
+      finalResponse.auth_token,
+      finalResponse.user_id,
+      username,
+      exportKeyBytes,
+      rootKey,
+      rootKeyResponse.root_key_version,
+    );
 
     // Redirect
     navigate(getRedirectTo());

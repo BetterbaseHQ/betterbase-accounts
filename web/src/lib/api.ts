@@ -184,6 +184,7 @@ export const api = {
     appKeypairBlob?: string,
     appPublicKeyJwk?: string,
     wrappedScopedKey?: string,
+    rootKeyVersion?: number,
   ) =>
     postAuth<{ redirect_uri: string }>("/oauth/consent", {
       oauth_state: oauthState,
@@ -193,6 +194,7 @@ export const api = {
       ...(appKeypairBlob && { app_keypair_blob: appKeypairBlob }),
       ...(appPublicKeyJwk && { app_public_key_jwk: appPublicKeyJwk }),
       ...(wrappedScopedKey && { wrapped_scoped_key: wrappedScopedKey }),
+      ...(wrappedScopedKey && { root_key_version: rootKeyVersion }),
     }),
 
   getGrantKeypairBlob: (clientId: string) =>

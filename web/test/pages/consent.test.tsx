@@ -56,6 +56,7 @@ vi.mock("@/contexts/auth-context", () => ({
     userId: "user-1",
     email: "user@example.test",
     rootKey: new Uint8Array(32),
+    rootKeyVersion: 3,
     hasRootKey: true,
   }),
 }));

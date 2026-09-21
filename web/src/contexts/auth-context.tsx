@@ -23,7 +23,12 @@ interface AuthContextValue extends AuthState {
     email: string,
     exportKey: Uint8Array,
     rootKey: Uint8Array,
+    rootKeyVersion: number,
   ) => void;
+  /// Version of the account root key held in memory; consent submissions
+  /// carry it so the server can reject material derived under a retired
+  /// root (AUD-008/009 residual).
+  rootKeyVersion: number | null;
   clearAuth: () => void;
   clearExportKey: () => void;
   hasExportKey: boolean;
@@ -54,13 +59,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Export key and root key are never persisted - only held in memory
   const [exportKey, setExportKey] = useState<Uint8Array | null>(null);
   const [rootKey, setRootKey] = useState<Uint8Array | null>(null);
+  const [rootKeyVersion, setRootKeyVersion] = useState<number | null>(null);
 
   // Keep refs for secure clearing
   const exportKeyRef = useRef<Uint8Array | null>(null);
   const rootKeyRef = useRef<Uint8Array | null>(null);
+  const rootKeyVersionRef = useRef<number | null>(null);
 
   const setAuth = useCallback(
-    (token: string, id: string, userEmail: string, key: Uint8Array, root: Uint8Array) => {
+    (
+      token: string,
+      id: string,
+      userEmail: string,
+      key: Uint8Array,
+      root: Uint8Array,
+      version: number,
+    ) => {
       // Clear any existing keys before setting new ones
       secureClear(exportKeyRef.current);
       secureClear(rootKeyRef.current);
@@ -70,8 +84,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setEmail(userEmail);
       setExportKey(key);
       setRootKey(root);
+      setRootKeyVersion(version);
       exportKeyRef.current = key;
       rootKeyRef.current = root;
+      rootKeyVersionRef.current = version;
 
       // Persist token, userId, and email to localStorage
       localStorage.setItem("auth_token", token);
@@ -88,12 +104,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     secureClear(rootKeyRef.current);
     exportKeyRef.current = null;
     rootKeyRef.current = null;
+    rootKeyVersionRef.current = null;
 
     setAuthToken(null);
     setUserId(null);
     setEmail(null);
     setExportKey(null);
     setRootKey(null);
+    setRootKeyVersion(null);
 
     localStorage.removeItem("auth_token");
     localStorage.removeItem("user_id");
@@ -105,8 +123,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     secureClear(rootKeyRef.current);
     exportKeyRef.current = null;
     rootKeyRef.current = null;
+    rootKeyVersionRef.current = null;
     setExportKey(null);
     setRootKey(null);
+    setRootKeyVersion(null);
   }, []);
 
   const value = useMemo(
@@ -116,6 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email,
       exportKey,
       rootKey,
+      rootKeyVersion,
       setAuth,
       clearAuth,
       clearExportKey,

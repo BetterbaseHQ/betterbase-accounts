@@ -40,7 +40,14 @@ interface ConsentContext {
 export function ConsentPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { authToken, userId, email: loginIdentifier, rootKey, hasRootKey } = useAuth();
+  const {
+    authToken,
+    userId,
+    email: loginIdentifier,
+    rootKey,
+    rootKeyVersion,
+    hasRootKey,
+  } = useAuth();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [context, setContext] = useState<ConsentContext | null>(null);
@@ -218,6 +225,7 @@ export function ConsentPage() {
         appKeypairBlob,
         appPublicKeyJwk,
         wrappedScopedKeyB64,
+        rootKeyVersion ?? undefined,
       );
       // Redirect to the client's redirect_uri with code or error
       window.location.href = response.redirect_uri;

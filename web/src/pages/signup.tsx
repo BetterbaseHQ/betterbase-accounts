@@ -187,7 +187,15 @@ export function SignupPage() {
     );
 
     // Store auth token, export key, and root key in context
-    setAuth(finalResponse.auth_token, finalResponse.user_id, username, exportKeyBytes, rootKey);
+    const rootKeyInfo = await api.getRootKey(finalResponse.auth_token);
+    setAuth(
+      finalResponse.auth_token,
+      finalResponse.user_id,
+      username,
+      exportKeyBytes,
+      rootKey,
+      rootKeyInfo.root_key_version,
+    );
 
     // Redirect
     navigate(getRedirectTo());

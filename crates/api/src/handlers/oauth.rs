@@ -316,6 +316,13 @@ pub struct ConsentBody {
     pub app_public_key_jwk: Option<String>,
     #[serde(default)]
     pub app_keypair_blob: Option<String>,
+    /// Version of the account root key the client derived its key
+    /// material under. Required whenever key material is submitted: a
+    /// rotation since the consent page loaded means the material is
+    /// wrapped under a retired root and would strand the grant
+    /// (AUD-008/009 residual).
+    #[serde(default)]
+    pub root_key_version: Option<i64>,
 }
 
 /// POST /oauth/consent (auth-gated)
@@ -439,6 +446,13 @@ pub async fn handle_oauth_consent(
                 "invalid wrapped scoped key: must be 41 bytes",
             );
         }
+        let Some(root_key_version) = req.root_key_version else {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "key material requires root_key_version (the version of the root key it was derived under)",
+            );
+        };
         let grant = match state
             .storage
             .get_or_create_oauth_grant(client_id, auth_ctx.account_id, &oauth_state.scope)
@@ -450,9 +464,20 @@ pub async fn handle_oauth_consent(
         if grant.wrapped_scoped_key.is_none() || grant.wrapped_scoped_key.as_deref() == Some(&[]) {
             if let Err(e) = state
                 .storage
-                .update_grant_wrapped_scoped_key(grant.id, &key_bytes)
+                .update_grant_wrapped_scoped_key_root_checked(
+                    grant.id,
+                    &key_bytes,
+                    root_key_version,
+                )
                 .await
             {
+                if matches!(e, StorageError::RootKeyVersionConflict) {
+                    return write_oauth_error(
+                        StatusCode::CONFLICT,
+                        "invalid_grant_state",
+                        "root key rotated since the consent page loaded — re-authenticate and retry",
+                    );
+                }
                 tracing::error!(error = %e, "failed to persist wrapped scoped key");
                 return write_oauth_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -510,6 +535,13 @@ pub async fn handle_oauth_consent(
                 "app_keypair_blob requires wrapped_scoped_key (key material must land atomically)",
             );
         };
+        let Some(root_key_version) = req.root_key_version else {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "key material requires root_key_version (the version of the root key it was derived under)",
+            );
+        };
         let key_bytes = match B64.decode(wsk) {
             Ok(b) => b,
             Err(_) => {
@@ -537,10 +569,22 @@ pub async fn handle_oauth_consent(
         };
         match state
             .storage
-            .install_consent_key_bundle(grant.id, &key_bytes, &canonical, blob)
+            .install_consent_key_bundle(grant.id, &key_bytes, &canonical, blob, root_key_version)
             .await
         {
             Ok(ConsentKeyInstall::Installed) => {}
+            Ok(ConsentKeyInstall::StaleRoot) => {
+                tracing::warn!(
+                    grant_id = %grant.id,
+                    expected_root_version = root_key_version,
+                    "consent key bundle rejected: account root key rotated since derivation"
+                );
+                return write_oauth_error(
+                    StatusCode::CONFLICT,
+                    "invalid_grant_state",
+                    "root key rotated since the consent page loaded — re-authenticate and retry",
+                );
+            }
             Ok(ConsentKeyInstall::Conflict) => {
                 tracing::warn!(
                     grant_id = %grant.id,
@@ -1962,11 +2006,21 @@ mod consent_bundle_tests {
     }
 
     fn consent_body(state: &str, wrapped: &[u8], blob: &str) -> serde_json::Value {
+        consent_body_with_root_version(state, wrapped, blob, 0)
+    }
+
+    fn consent_body_with_root_version(
+        state: &str,
+        wrapped: &[u8],
+        blob: &str,
+        root_key_version: i64,
+    ) -> serde_json::Value {
         json!({
             "oauth_state": state,
             "approved": true,
             "wrapped_scoped_key": B64.encode(wrapped),
             "app_keypair_blob": blob,
+            "root_key_version": root_key_version,
             // Real P-256 point (validate_p256_public_key checks on-curve).
             "app_public_key_jwk": json!({
                 "kty": "EC",
@@ -2017,6 +2071,66 @@ mod consent_bundle_tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["app_keypair_blob"], "blob-v1");
         assert_eq!(body["wrapped_scoped_key"], B64.encode(&wrapped));
+    }
+
+    #[tokio::test]
+    async fn consent_bundle_rejects_material_derived_under_rotated_root() {
+        let Some((app, client_id, token)) = seed().await else {
+            return;
+        };
+        let state = state_for(&app, &client_id);
+        let wrapped = vec![7u8; WRAPPED_SCOPED_KEY_SIZE];
+
+        // AUD-008/009 residual: the account's root key rotated (bump the
+        // committed version) after this client derived its key material.
+        // Installing the bundle would strand the grant under a root
+        // nobody holds anymore.
+        // The interleaving under test only needs the committed version to
+        // have moved; bump it directly (a full API rotation needs valid
+        // wrapped material unrelated to this check).
+        sqlx::query("UPDATE accounts SET root_key_version = 1 WHERE email = 'bundle@example.test'")
+            .execute(app.storage.pool())
+            .await
+            .expect("bump root version");
+
+        let (status, body) = post_json(
+            &app,
+            "/oauth/consent",
+            Some(&token),
+            &consent_body_with_root_version(&state, &wrapped, "blob-stale", 0),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "body: {body}");
+        assert!(body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("invalid_grant_state"));
+
+        // Nothing was written for this grant.
+        let (status, body) = get_json(
+            &app,
+            &format!("/oauth/grant-keypair?client_id={client_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["app_keypair_blob"], "");
+
+        // A client that re-derived under the CURRENT root succeeds.
+        let state = state_for(&app, &client_id);
+        let (status, body) = post_json(
+            &app,
+            "/oauth/consent",
+            Some(&token),
+            &consent_body_with_root_version(&state, &wrapped, "blob-fresh", 1),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert_eq!(body_text(&body), "");
+    }
+
+    fn body_text(body: &serde_json::Value) -> String {
+        body.as_str().unwrap_or("").to_string()
     }
 
     #[tokio::test]

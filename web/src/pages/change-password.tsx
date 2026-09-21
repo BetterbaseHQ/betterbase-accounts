@@ -189,12 +189,17 @@ export function ChangePasswordPage() {
       );
 
       // Step 8: Update auth context with new credentials
+      // The root key bytes are unchanged, but refresh the version stamp:
+      // password change rotated the wrapping, and consent submissions must
+      // carry the committed version (AUD-008/009 residual).
+      const rootKeyInfo = await api.getRootKey();
       setAuth(
         completeResponse.auth_token,
         completeResponse.user_id,
         email || "",
         newExportKeyBytes,
         rootKey,
+        rootKeyInfo.root_key_version,
       );
 
       // Step 9: Redirect to recovery setup (new mnemonic needed for new blob)
