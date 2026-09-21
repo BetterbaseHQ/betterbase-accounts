@@ -41,26 +41,60 @@ impl CompositeStorage for PostgresStorage {
     async fn rotate_root_key(
         &self,
         account_id: Uuid,
+        expected_root_version: i64,
         wrapped_root_key: &[u8],
         grant_updates: &[GrantKeyUpdate],
         recovery_blob: &[u8],
-    ) -> Result<(), StorageError> {
+    ) -> Result<i64, StorageError> {
         let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
 
-        // Update wrapped root key
-        sqlx::query!(
-            "UPDATE accounts SET wrapped_root_key = $2 WHERE id = $1",
-            account_id,
-            wrapped_root_key,
+        // AUD-009: lock the account's full grant set first so the
+        // completeness check below cannot interleave with a concurrent
+        // consent writing one of these rows.
+        let grant_ids: Vec<Uuid> = sqlx::query_scalar!(
+            "SELECT id FROM oauth_grants WHERE account_id = $1 FOR UPDATE",
+            account_id
         )
-        .execute(&mut *tx)
+        .fetch_all(&mut *tx)
         .await
         .map_err(StorageError::from)?;
+
+        // The rotation must cover every grant on the account — committing
+        // a partial list would strand the omitted grants under the old
+        // root forever (there is no later path that learns the old root).
+        let submitted: std::collections::HashSet<Uuid> =
+            grant_updates.iter().map(|u| u.grant_id).collect();
+        let stored: std::collections::HashSet<Uuid> = grant_ids.iter().copied().collect();
+        if submitted != stored {
+            return Err(StorageError::RotationGrantsIncomplete);
+        }
+
+        // CAS on the root key version: a rotation (or credential change)
+        // prepared against an older snapshot must not overwrite the newer
+        // state. Returns the new version on success.
+        let new_version = sqlx::query_scalar!(
+            r#"
+            UPDATE accounts
+            SET wrapped_root_key = $2,
+                root_key_version = root_key_version + 1,
+                updated_at = NOW()
+            WHERE id = $1 AND root_key_version = $3
+            RETURNING root_key_version
+            "#,
+            account_id,
+            wrapped_root_key,
+            expected_root_version as i32,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StorageError::from)?
+        .map(i64::from)
+        .ok_or(StorageError::RootKeyVersionConflict)?;
 
         // Batch update grant wrapped keys
         for update in grant_updates {
             sqlx::query!(
-                "UPDATE oauth_grants SET wrapped_scoped_key = $2 WHERE id = $1",
+                "UPDATE oauth_grants SET wrapped_scoped_key = $2, updated_at = NOW() WHERE id = $1",
                 update.grant_id,
                 update.wrapped_scoped_key.as_slice(),
             )
@@ -69,8 +103,19 @@ impl CompositeStorage for PostgresStorage {
             .map_err(StorageError::from)?;
         }
 
-        // Update recovery blob if non-empty
-        if !recovery_blob.is_empty() {
+        // AUD-009 recovery semantics: a rotation with a new blob replaces
+        // it; a rotation without one deletes the old blob — the old blob
+        // decrypts to the retired root and would present a false recovery
+        // path that yields a dead key.
+        if recovery_blob.is_empty() {
+            sqlx::query!(
+                "DELETE FROM recovery_blobs WHERE account_id = $1",
+                account_id
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(StorageError::from)?;
+        } else {
             sqlx::query!(
                 r#"
                 INSERT INTO recovery_blobs (account_id, blob)
@@ -86,6 +131,6 @@ impl CompositeStorage for PostgresStorage {
         }
 
         tx.commit().await.map_err(StorageError::from)?;
-        Ok(())
+        Ok(new_version)
     }
 }

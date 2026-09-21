@@ -14,6 +14,10 @@ use uuid::Uuid;
 pub enum StorageError {
     #[error("account not found")]
     AccountNotFound,
+    #[error("root key version mismatch — rotation was prepared against a stale snapshot")]
+    RootKeyVersionConflict,
+    #[error("rotation grant list does not cover every grant on the account")]
+    RotationGrantsIncomplete,
     #[error("account already exists")]
     AccountExists,
     #[error("state not found")]
@@ -256,6 +260,11 @@ pub trait AccountStorage: Send + Sync {
 #[async_trait]
 pub trait RootKeyStorage: Send + Sync {
     async fn get_wrapped_root_key(&self, account_id: Uuid) -> Result<Vec<u8>, StorageError>;
+    /// Wrapped root key plus its current version (AUD-009 CAS token).
+    async fn get_root_key_with_version(
+        &self,
+        account_id: Uuid,
+    ) -> Result<(Vec<u8>, i64), StorageError>;
     async fn set_wrapped_root_key(
         &self,
         account_id: Uuid,
@@ -534,10 +543,11 @@ pub trait CompositeStorage: Send + Sync {
     async fn rotate_root_key(
         &self,
         account_id: Uuid,
+        expected_root_version: i64,
         wrapped_root_key: &[u8],
         grant_updates: &[GrantKeyUpdate],
         recovery_blob: &[u8],
-    ) -> Result<(), StorageError>;
+    ) -> Result<i64, StorageError>;
 }
 
 // ─── Supertrait ───────────────────────────────────────────────────────────────

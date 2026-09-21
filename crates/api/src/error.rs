@@ -59,6 +59,14 @@ impl IntoResponse for ApiError {
 impl From<StorageError> for ApiError {
     fn from(e: StorageError) -> Self {
         match e {
+            StorageError::RootKeyVersionConflict => ApiError::new(
+                axum::http::StatusCode::CONFLICT,
+                "root key changed since this rotation was prepared — re-read and retry",
+            ),
+            StorageError::RotationGrantsIncomplete => ApiError::new(
+                axum::http::StatusCode::CONFLICT,
+                "rotation must cover every grant — the grant set changed since this rotation was prepared",
+            ),
             StorageError::AccountNotFound => ApiError::not_found("account not found"),
             StorageError::AccountExists => ApiError::conflict("account already exists"),
             StorageError::StateNotFound | StorageError::StateExpired => {

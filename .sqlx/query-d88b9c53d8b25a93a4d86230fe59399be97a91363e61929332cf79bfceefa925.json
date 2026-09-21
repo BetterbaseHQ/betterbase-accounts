@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE accounts\n            SET wrapped_root_key = $2,\n                root_key_version = root_key_version + 1,\n                updated_at = NOW()\n            WHERE id = $1 AND root_key_version = $3\n            RETURNING root_key_version\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "root_key_version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d88b9c53d8b25a93a4d86230fe59399be97a91363e61929332cf79bfceefa925"
+}

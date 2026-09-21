@@ -279,6 +279,24 @@ impl AccountStorage for PostgresStorage {
 
 #[async_trait]
 impl RootKeyStorage for PostgresStorage {
+    async fn get_root_key_with_version(
+        &self,
+        account_id: Uuid,
+    ) -> Result<(Vec<u8>, i64), StorageError> {
+        let row = sqlx::query!(
+            "SELECT wrapped_root_key, root_key_version FROM accounts WHERE id = $1",
+            account_id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StorageError::from)?
+        .ok_or(StorageError::AccountNotFound)?;
+        Ok((
+            row.wrapped_root_key.unwrap_or_default(),
+            i64::from(row.root_key_version),
+        ))
+    }
+
     async fn get_wrapped_root_key(&self, account_id: Uuid) -> Result<Vec<u8>, StorageError> {
         let row = sqlx::query!(
             "SELECT wrapped_root_key FROM accounts WHERE id = $1",

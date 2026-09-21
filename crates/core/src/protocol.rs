@@ -208,6 +208,8 @@ pub struct StoreKeyRequest {
 pub struct GetRootKeyResponse {
     /// Base64-encoded 41-byte wrapped root key
     pub wrapped_root_key: String,
+    /// Current root key version — submit with rotate-root-key (AUD-009).
+    pub root_key_version: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,6 +245,9 @@ pub struct UpdateGrantWrappedKeysRequest {
 #[derive(Debug, Deserialize)]
 pub struct RotateRootKeyRequest {
     pub wrapped_root_key: String,
+    /// Version the rotation was prepared against; a mismatch rejects the
+    /// rotation (AUD-009 CAS).
+    pub expected_root_version: i64,
     #[serde(default)]
     pub grants: Vec<GrantKeyUpdate>,
     #[serde(default)]

@@ -251,7 +251,7 @@ export const api = {
     }),
 
   getRootKey: (token?: string) =>
-    getAuth<{ wrapped_root_key: string }>("/v1/accounts/root-key", token),
+    getAuth<{ wrapped_root_key: string; root_key_version: number }>("/v1/accounts/root-key", token),
 
   setRootKey: (wrappedRootKey: string) =>
     putAuth<void>("/v1/accounts/root-key", { wrapped_root_key: wrappedRootKey }),
@@ -266,11 +266,13 @@ export const api = {
 
   rotateRootKey: (
     wrappedRootKey: string,
+    expectedRootVersion: number,
     grants: Array<{ grant_id: string; wrapped_scoped_key: string }>,
     recoveryBlob?: string,
   ) =>
     postAuth<void>("/v1/accounts/rotate-root-key", {
       wrapped_root_key: wrappedRootKey,
+      expected_root_version: expectedRootVersion,
       grants,
       ...(recoveryBlob && { recovery_blob: recoveryBlob }),
     }),

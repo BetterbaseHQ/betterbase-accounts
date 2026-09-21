@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT wrapped_root_key, root_key_version FROM accounts WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "wrapped_root_key",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "root_key_version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "0f04b44970ddb07db979b3ab25f0bc3540bfca9aafaccb7e6bf6c5410fe509b7"
+}
