@@ -326,6 +326,17 @@ pub trait OAuthCodeStorage: Send + Sync {
     async fn delete_oauth_code(&self, code: &str) -> Result<(), StorageError>;
 }
 
+/// Outcome of an atomic consent key-bundle install (AUD-008).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConsentKeyInstall {
+    /// The (wrapped scoped key, app keypair) bundle was installed or
+    /// consistently replaced.
+    Installed,
+    /// The grant's stored wrapped scoped key differs from the submitted
+    /// one — the client acted on stale or absent state and must retry.
+    Conflict,
+}
+
 #[async_trait]
 pub trait OAuthGrantStorage: Send + Sync {
     async fn get_or_create_oauth_grant(
@@ -358,6 +369,19 @@ pub trait OAuthGrantStorage: Send + Sync {
         public_key: &serde_json::Value,
         blob: &str,
     ) -> Result<(), StorageError>;
+    /// Atomically install the consent key bundle (AUD-008): when the grant
+    /// already holds a wrapped scoped key, the app keypair is only written
+    /// when the submitted wrapper matches it byte-for-byte, keeping the
+    /// keypair (encrypted under the scoped key) and the stored wrapper
+    /// consistent. An unconditional keypair overwrite under a stale read
+    /// would strand the existing key material.
+    async fn install_consent_key_bundle(
+        &self,
+        grant_id: Uuid,
+        wrapped_scoped_key: &[u8],
+        public_key: &serde_json::Value,
+        blob: &str,
+    ) -> Result<ConsentKeyInstall, StorageError>;
     async fn update_grant_wrapped_scoped_key(
         &self,
         grant_id: Uuid,

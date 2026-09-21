@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    UPDATE oauth_grants\n                    SET wrapped_scoped_key = $2, app_public_key = $3, app_keypair_blob = $4,\n                        updated_at = NOW()\n                    WHERE id = $1\n                    ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Jsonb",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7cef20e65c4430a70611c28bd0c19959ab298f25bdcfa5575f5213350db65928"
+}

@@ -26,9 +26,9 @@ use betterbase_accounts_core::{
     protocol::*,
 };
 use betterbase_accounts_storage::{
-    AccountStorage, OAuthClient, OAuthClientStorage, OAuthCode, OAuthCodeStorage, OAuthGrant,
-    OAuthGrantStorage, OAuthRefreshToken, OAuthRefreshTokenStorage, OAuthSigningKeyStorage,
-    StorageError,
+    AccountStorage, ConsentKeyInstall, OAuthClient, OAuthClientStorage, OAuthCode,
+    OAuthCodeStorage, OAuthGrant, OAuthGrantStorage, OAuthRefreshToken, OAuthRefreshTokenStorage,
+    OAuthSigningKeyStorage, StorageError,
 };
 use subtle::ConstantTimeEq as _;
 
@@ -417,8 +417,11 @@ pub async fn handle_oauth_consent(
         }
     }
 
-    // Store wrapped scoped key if provided (first-write-wins, matching Go behavior)
-    if let Some(ref wsk) = req.wrapped_scoped_key {
+    // Store wrapped scoped key if provided. When the app keypair is
+    // co-submitted (the consent page always pairs them), the install goes
+    // through the atomic bundle path below instead — first-write-wins here
+    // only handles a wrapper submitted without a keypair.
+    if let (Some(ref wsk), None) = (&req.wrapped_scoped_key, &req.app_keypair_blob) {
         let key_bytes = match B64.decode(wsk) {
             Ok(b) => b,
             Err(_) => {
@@ -460,7 +463,11 @@ pub async fn handle_oauth_consent(
         }
     }
 
-    // Store app keypair blob if provided (matching Go behavior)
+    // Store app keypair blob if provided (AUD-008: atomically with the
+    // wrapped scoped key — a keypair overwrite is only accepted when the
+    // submitted wrapper matches the grant's stored one, so a client acting
+    // on a stale/failed read cannot silently replace existing key
+    // material).
     if let Some(ref blob) = req.app_keypair_blob {
         if blob.len() > MAX_KEYPAIR_BLOB_SIZE {
             return write_oauth_error(
@@ -469,41 +476,84 @@ pub async fn handle_oauth_consent(
                 "app_keypair_blob too large",
             );
         }
-        if let Some(ref pub_key_str) = req.app_public_key_jwk {
-            let pub_key: serde_json::Value = match serde_json::from_str(pub_key_str) {
-                Ok(v) => v,
-                Err(_) => {
-                    return write_oauth_error(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request",
-                        "invalid app_public_key_jwk: invalid JSON",
-                    );
-                }
-            };
-            let canonical = match validate_p256_public_key(&pub_key) {
-                Ok(c) => c,
-                Err(_) => {
-                    return write_oauth_error(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request",
-                        "invalid app_public_key_jwk",
-                    );
-                }
-            };
-            let grant = match state
-                .storage
-                .get_or_create_oauth_grant(client_id, auth_ctx.account_id, &oauth_state.scope)
-                .await
-            {
-                Ok(g) => g,
-                Err(e) => return ApiError::from(e).into_response(),
-            };
-            if let Err(e) = state
-                .storage
-                .update_grant_keypair(grant.id, &canonical, blob)
-                .await
-            {
-                tracing::error!(error = %e, "failed to persist app keypair");
+        let Some(ref pub_key_str) = req.app_public_key_jwk else {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "app_keypair_blob requires app_public_key_jwk",
+            );
+        };
+        let pub_key: serde_json::Value = match serde_json::from_str(pub_key_str) {
+            Ok(v) => v,
+            Err(_) => {
+                return write_oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "invalid app_public_key_jwk: invalid JSON",
+                );
+            }
+        };
+        let canonical = match validate_p256_public_key(&pub_key) {
+            Ok(c) => c,
+            Err(_) => {
+                return write_oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "invalid app_public_key_jwk",
+                );
+            }
+        };
+        let Some(ref wsk) = req.wrapped_scoped_key else {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "app_keypair_blob requires wrapped_scoped_key (key material must land atomically)",
+            );
+        };
+        let key_bytes = match B64.decode(wsk) {
+            Ok(b) => b,
+            Err(_) => {
+                return write_oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "invalid wrapped scoped key",
+                );
+            }
+        };
+        if key_bytes.len() != WRAPPED_SCOPED_KEY_SIZE {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "invalid wrapped scoped key: must be 41 bytes",
+            );
+        }
+        let grant = match state
+            .storage
+            .get_or_create_oauth_grant(client_id, auth_ctx.account_id, &oauth_state.scope)
+            .await
+        {
+            Ok(g) => g,
+            Err(e) => return ApiError::from(e).into_response(),
+        };
+        match state
+            .storage
+            .install_consent_key_bundle(grant.id, &key_bytes, &canonical, blob)
+            .await
+        {
+            Ok(ConsentKeyInstall::Installed) => {}
+            Ok(ConsentKeyInstall::Conflict) => {
+                tracing::warn!(
+                    grant_id = %grant.id,
+                    "consent key bundle rejected: submitted wrapped key does not match stored state"
+                );
+                return write_oauth_error(
+                    StatusCode::CONFLICT,
+                    "invalid_grant_state",
+                    "grant key material changed since the consent page loaded — retry consent",
+                );
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to persist consent key bundle");
                 return write_oauth_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "server_error",
@@ -1865,5 +1915,185 @@ mod refresh_tests {
             post_form(&app, "/oauth/token", None, &refresh_form(&client_id, &raw2)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
         assert_eq!(body["error"], "invalid_grant");
+    }
+}
+
+#[cfg(test)]
+mod consent_bundle_tests {
+    use base64::engine::general_purpose::STANDARD as B64;
+    use serde_json::json;
+
+    use crate::test_support::{get_json, post_json, test_app};
+
+    use super::*;
+
+    const REDIRECT_URI: &str = "http://localhost:5381/";
+
+    async fn seed() -> Option<(crate::test_support::TestApp, String, String)> {
+        let app = test_app().await?;
+        let client_id = Uuid::new_v4();
+        app.storage
+            .create_oauth_client(&OAuthClient {
+                id: client_id,
+                name: "bundle client".to_owned(),
+                secret_hash: None,
+                redirect_uris: vec![REDIRECT_URI.to_owned()],
+                allowed_scopes: vec!["openid".to_owned(), "sync".to_owned()],
+                created_at: chrono::Utc::now(),
+            })
+            .await
+            .expect("create client");
+        let account = app
+            .storage
+            .get_or_create_account(
+                crate::test_support::TEST_ISSUER,
+                "bundle",
+                "bundle@example.test",
+            )
+            .await
+            .expect("create account");
+        let token = app.auth_token(&account.id.to_string());
+        Some((app, client_id.to_string(), token))
+    }
+
+    fn consent_body(state: &str, wrapped: &[u8], blob: &str) -> serde_json::Value {
+        json!({
+            "oauth_state": state,
+            "approved": true,
+            "wrapped_scoped_key": B64.encode(wrapped),
+            "app_keypair_blob": blob,
+            // Real P-256 point (validate_p256_public_key checks on-curve).
+            "app_public_key_jwk": json!({
+                "kty": "EC",
+                "crv": "P-256",
+                "x": "-fdJbZAPB-1JvgW0Z-yAicImzBmEkhx396ojqztJHFw",
+                "y": "DZagJ-DypVyEsBj3y3CdosboodfJAP9u9Z4hItYM4NM",
+            }).to_string(),
+        })
+    }
+
+    fn state_for(app: &crate::test_support::TestApp, client_id: &str) -> String {
+        app.jwt
+            .create_oauth_state_token(OAuthStateClaims::new(
+                client_id.to_owned(),
+                REDIRECT_URI.to_owned(),
+                "openid".to_owned(),
+                "client-state".to_owned(),
+                "challenge".to_owned(),
+                "S256".to_owned(),
+                None,
+            ))
+            .expect("state token")
+    }
+
+    #[tokio::test]
+    async fn consent_bundle_installs_atomically_on_empty_grant() {
+        let Some((app, client_id, token)) = seed().await else {
+            return;
+        };
+        let state = state_for(&app, &client_id);
+        let wrapped = vec![7u8; WRAPPED_SCOPED_KEY_SIZE];
+        let (status, body) = post_json(
+            &app,
+            "/oauth/consent",
+            Some(&token),
+            &consent_body(&state, &wrapped, "blob-v1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+
+        // The bundle landed together.
+        let (status, body) = get_json(
+            &app,
+            &format!("/oauth/grant-keypair?client_id={client_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["app_keypair_blob"], "blob-v1");
+        assert_eq!(body["wrapped_scoped_key"], B64.encode(&wrapped));
+    }
+
+    #[tokio::test]
+    async fn consent_bundle_rejects_stale_read_overwriting_keypair() {
+        let Some((app, client_id, token)) = seed().await else {
+            return;
+        };
+        // First consent installs W1 + keypair-v1.
+        let state = state_for(&app, &client_id);
+        let w1 = vec![1u8; WRAPPED_SCOPED_KEY_SIZE];
+        let (status, body) = post_json(
+            &app,
+            "/oauth/consent",
+            Some(&token),
+            &consent_body(&state, &w1, "keypair-v1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+
+        // AUD-008: a client whose grant read failed generates a fresh
+        // scoped key and submits W2 + keypair-v2. The server must reject:
+        // overwriting the keypair under a different wrapper strands the
+        // existing key material.
+        let state2 = state_for(&app, &client_id);
+        let w2 = vec![2u8; WRAPPED_SCOPED_KEY_SIZE];
+        let (status, body) = post_json(
+            &app,
+            "/oauth/consent",
+            Some(&token),
+            &consent_body(&state2, &w2, "keypair-v2"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "body: {body}");
+        assert_eq!(body["error"], "invalid_grant_state");
+
+        // Stored state unchanged: W1 + keypair-v1 intact.
+        let (status, body) = get_json(
+            &app,
+            &format!("/oauth/grant-keypair?client_id={client_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["app_keypair_blob"], "keypair-v1");
+        assert_eq!(body["wrapped_scoped_key"], B64.encode(&w1));
+
+        // A consistent resubmission (same wrapper) replaces the keypair.
+        let state3 = state_for(&app, &client_id);
+        let (status, body) = post_json(
+            &app,
+            "/oauth/consent",
+            Some(&token),
+            &consent_body(&state3, &w1, "keypair-v1b"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let (_, body) = get_json(
+            &app,
+            &format!("/oauth/grant-keypair?client_id={client_id}"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(body["app_keypair_blob"], "keypair-v1b");
+        assert_eq!(body["wrapped_scoped_key"], B64.encode(&w1));
+    }
+
+    #[tokio::test]
+    async fn consent_keypair_without_wrapped_key_is_rejected() {
+        let Some((app, client_id, token)) = seed().await else {
+            return;
+        };
+        let state = state_for(&app, &client_id);
+        let mut body = consent_body(&state, &[0u8; WRAPPED_SCOPED_KEY_SIZE], "blob");
+        body.as_object_mut().unwrap().remove("wrapped_scoped_key");
+        let (status, body) = post_json(&app, "/oauth/consent", Some(&token), &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+        assert!(
+            body["error_description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("atomically"),
+            "body: {body}"
+        );
     }
 }

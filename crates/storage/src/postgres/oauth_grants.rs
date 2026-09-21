@@ -249,6 +249,64 @@ impl OAuthGrantStorage for PostgresStorage {
         Ok(())
     }
 
+    async fn install_consent_key_bundle(
+        &self,
+        grant_id: Uuid,
+        wrapped_scoped_key: &[u8],
+        public_key: &serde_json::Value,
+        blob: &str,
+    ) -> Result<crate::ConsentKeyInstall, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+        let stored = sqlx::query_scalar!(
+            "SELECT wrapped_scoped_key FROM oauth_grants WHERE id = $1 FOR UPDATE",
+            grant_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StorageError::from)?
+        .ok_or(StorageError::OAuthGrantNotFound)?;
+
+        let outcome = match stored.as_deref() {
+            None => {
+                sqlx::query!(
+                    r#"
+                    UPDATE oauth_grants
+                    SET wrapped_scoped_key = $2, app_public_key = $3, app_keypair_blob = $4,
+                        updated_at = NOW()
+                    WHERE id = $1
+                    "#,
+                    grant_id,
+                    wrapped_scoped_key,
+                    public_key,
+                    blob,
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(StorageError::from)?;
+                crate::ConsentKeyInstall::Installed
+            }
+            Some(stored_bytes) if stored_bytes == wrapped_scoped_key => {
+                sqlx::query!(
+                    r#"
+                    UPDATE oauth_grants
+                    SET app_public_key = $2, app_keypair_blob = $3, updated_at = NOW()
+                    WHERE id = $1
+                    "#,
+                    grant_id,
+                    public_key,
+                    blob,
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(StorageError::from)?;
+                crate::ConsentKeyInstall::Installed
+            }
+            Some(_) => crate::ConsentKeyInstall::Conflict,
+        };
+        tx.commit().await.map_err(StorageError::from)?;
+        Ok(outcome)
+    }
+
     async fn update_grant_keypair(
         &self,
         grant_id: Uuid,

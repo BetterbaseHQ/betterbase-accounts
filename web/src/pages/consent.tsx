@@ -14,20 +14,19 @@ import { useAuth } from "@/contexts/auth-context";
 import { api } from "@/lib/api";
 import { formatError } from "@/lib/utils";
 import {
-  generateRandomKey,
-  wrapWithRootKey,
-  unwrapWithRootKey,
   encryptAsJWE,
   computeJwkThumbprint,
   buildScopedKeyJWK,
-  computeScopedKeyKid,
   isValidP256PublicKey,
-  generateAppKeypair,
-  deriveAppKeypairKey,
-  encryptAppKeypairBlob,
-  decryptAppKeypairBlob,
 } from "@/lib/crypto";
 import type { ScopedKeyJWK } from "@/lib/crypto";
+import {
+  resolveScopedKey,
+  resolveAppKeypair,
+  appWrappingKey,
+  computeScopedKeyKid,
+  encryptAppKeypairBlob,
+} from "@/lib/consent-keys";
 
 /** Server-validated authorization context from /oauth/consent-context. */
 interface ConsentContext {
@@ -35,41 +34,6 @@ interface ConsentContext {
   clientName: string;
   scopes: string[];
   keysJwk?: { kty: string; crv: string; x: string; y: string };
-}
-
-/**
- * Recover an existing app keypair from the server, or generate a fresh one.
- * Falls back to generation on any error (network, decryption, validation).
- */
-async function getOrCreateAppKeypair(
-  clientId: string,
-  wrappingKey: CryptoKey,
-): Promise<{ publicKeyJwk: JsonWebKey; privateKeyJwk: JsonWebKey }> {
-  try {
-    const existing = await api.getGrantKeypairBlob(clientId);
-    if (existing.app_keypair_blob) {
-      const decrypted = await decryptAppKeypairBlob(existing.app_keypair_blob, wrappingKey);
-      if (
-        decrypted.kty !== "EC" ||
-        decrypted.crv !== "P-256" ||
-        !decrypted.x ||
-        !decrypted.y ||
-        !decrypted.d
-      ) {
-        throw new Error("Decrypted keypair is invalid: expected P-256 EC private key");
-      }
-      return {
-        privateKeyJwk: decrypted,
-        publicKeyJwk: { kty: decrypted.kty, crv: decrypted.crv, x: decrypted.x, y: decrypted.y },
-      };
-    }
-  } catch (err) {
-    console.warn(
-      "Failed to recover existing keypair, generating new:",
-      err instanceof Error ? err.message : String(err),
-    );
-  }
-  return generateAppKeypair();
 }
 
 export function ConsentPage() {
@@ -198,43 +162,23 @@ export function ConsentPage() {
           throw new Error("Invalid recipient public key");
         }
 
-        // Check if we already have a wrapped scoped key for this grant
-        let scopedKey: Uint8Array;
-        let existingWrappedScopedKey: string | undefined;
+        // AUD-008: resolve the scoped key and app keypair through
+        // fail-closed helpers. A transient read failure or an undecryptable
+        // existing blob throws — it must never silently generate
+        // replacement key material over an existing grant.
+        const resolved = await resolveScopedKey(api, clientId, rootKey);
+        // Always submit the wrapped form alongside the keypair: the server
+        // installs the bundle only when it matches the stored wrapper (or
+        // the grant is empty), atomically rejecting stale-read races.
+        wrappedScopedKeyB64 = resolved.wrappedScopedKeyB64;
 
-        try {
-          const grantInfo = await api.getGrantKeypairBlob(clientId);
-          if (grantInfo.wrapped_scoped_key) {
-            existingWrappedScopedKey = grantInfo.wrapped_scoped_key;
-          }
-        } catch {
-          // No existing grant, will generate new scoped key
-        }
+        const kid = await computeScopedKeyKid(resolved.scopedKey);
 
-        if (existingWrappedScopedKey) {
-          // Unwrap existing scoped key with root key
-          const wrappedBytes = Uint8Array.from(atob(existingWrappedScopedKey), (c) =>
-            c.charCodeAt(0),
-          );
-          scopedKey = await unwrapWithRootKey(wrappedBytes, rootKey);
-        } else {
-          // Generate new random scoped key and wrap it
-          scopedKey = generateRandomKey();
-          const wrappedScopedKey = await wrapWithRootKey(scopedKey, rootKey);
-          wrappedScopedKeyB64 = btoa(String.fromCharCode(...wrappedScopedKey));
-        }
-
-        const kid = await computeScopedKeyKid(scopedKey);
-
-        // Derive app keypair wrapping key from scopedKey (not rootKey/exportKey)
-        const appWrappingKey = await deriveAppKeypairKey(scopedKey, userId, clientId);
-        const { publicKeyJwk, privateKeyJwk } = await getOrCreateAppKeypair(
-          clientId,
-          appWrappingKey,
-        );
+        const wrappingKey = await appWrappingKey(resolved.scopedKey, userId, clientId);
+        const { publicKeyJwk, privateKeyJwk } = await resolveAppKeypair(api, clientId, wrappingKey);
 
         // Encrypt the private key as a blob for server storage
-        appKeypairBlob = await encryptAppKeypairBlob(privateKeyJwk, appWrappingKey);
+        appKeypairBlob = await encryptAppKeypairBlob(privateKeyJwk, wrappingKey);
         appPublicKeyJwk = JSON.stringify({
           kty: publicKeyJwk.kty,
           crv: publicKeyJwk.crv,
@@ -245,7 +189,7 @@ export function ConsentPage() {
         // Build scoped keys payload including both the symmetric key and the
         // app keypair
         const scopedKeys: Record<string, ScopedKeyJWK | JsonWebKey> = {
-          [clientId]: buildScopedKeyJWK(scopedKey, kid),
+          [clientId]: buildScopedKeyJWK(resolved.scopedKey, kid),
           "app-keypair": {
             kty: privateKeyJwk.kty!,
             crv: privateKeyJwk.crv!,
