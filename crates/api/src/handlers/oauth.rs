@@ -756,17 +756,58 @@ async fn handle_refresh_token_grant(state: &AppState, req: TokenForm) -> Respons
     let token_hash = sha256_hash(req.refresh_token.as_bytes());
 
     // Look up the active refresh token. Previously-used tokens will not be
-    // found here (they were deleted by rotate_refresh_token). Reuse of a
-    // token that races with a concurrent rotation is caught atomically by
-    // the unique constraint inside rotate_refresh_token below.
+    // found here (they were deleted by rotate_refresh_token); a used hash is
+    // resolved from used_refresh_tokens below and revokes the surviving
+    // family (sequential reuse, AUD-004). Reuse that races with a concurrent
+    // rotation is caught by the conflict check inside rotate_refresh_token.
     let old_token = match state.storage.get_refresh_token_by_hash(&token_hash).await {
         Ok(t) => t,
-        Err(StorageError::RefreshTokenNotFound | StorageError::RefreshTokenExpired) => {
+        Err(StorageError::RefreshTokenExpired) => {
             return write_oauth_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_grant",
                 "invalid or expired refresh_token",
             );
+        }
+        Err(StorageError::RefreshTokenNotFound) => {
+            // AUD-004 sequential reuse: the presented token was already
+            // rotated (its hash now lives in used_refresh_tokens).
+            // Presenting it again must revoke the surviving family —
+            // otherwise a copied token keeps its thief's replacement alive
+            // even after the legitimate client presents the original.
+            match state
+                .storage
+                .get_used_refresh_grant_by_hash(&token_hash)
+                .await
+            {
+                Ok(Some(grant_id)) => {
+                    if let Err(e) = state.storage.delete_refresh_tokens_by_grant(grant_id).await {
+                        tracing::error!(
+                            grant_id = %grant_id,
+                            error = %e,
+                            "failed to revoke refresh family after sequential reuse"
+                        );
+                        return ApiError::from(e).into_response();
+                    }
+                    tracing::warn!(
+                        grant_id = %grant_id,
+                        "refresh token reuse detected (sequential), grant tokens revoked"
+                    );
+                    return write_oauth_error(
+                        StatusCode::UNAUTHORIZED,
+                        "invalid_grant",
+                        "refresh token reuse detected",
+                    );
+                }
+                Ok(None) => {
+                    return write_oauth_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_grant",
+                        "invalid or expired refresh_token",
+                    );
+                }
+                Err(e) => return ApiError::from(e).into_response(),
+            }
         }
         Err(e) => return ApiError::from(e).into_response(),
     };
@@ -1688,5 +1729,141 @@ mod consent_tests {
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use axum::http::StatusCode;
+
+    use crate::test_support::{post_form, test_app};
+
+    use super::*;
+
+    const REDIRECT_URI: &str = "http://localhost:5381/";
+
+    /// Seed client + account + grant + one active refresh token; return
+    /// (client_id, raw_refresh_token).
+    async fn seed_refresh_token(app: &crate::test_support::TestApp) -> (String, String) {
+        let client_id = Uuid::new_v4();
+        app.storage
+            .create_oauth_client(&OAuthClient {
+                id: client_id,
+                name: "refresh test client".to_owned(),
+                secret_hash: None,
+                redirect_uris: vec![REDIRECT_URI.to_owned()],
+                allowed_scopes: vec!["openid".to_owned()],
+                created_at: chrono::Utc::now(),
+            })
+            .await
+            .expect("create client");
+        let tail = &client_id.simple().to_string()[..12];
+        let account = app
+            .storage
+            .get_or_create_account(
+                crate::test_support::TEST_ISSUER,
+                &format!("user{tail}"),
+                &format!("user{tail}@example.test"),
+            )
+            .await
+            .expect("create account");
+        let grant = app
+            .storage
+            .get_or_create_oauth_grant(client_id, account.id, "openid")
+            .await
+            .expect("create grant");
+
+        let raw = generate_random_token();
+        let now = chrono::Utc::now();
+        app.storage
+            .create_refresh_token(&OAuthRefreshToken {
+                id: Uuid::new_v4(),
+                grant_id: grant.id,
+                token_hash: sha256_hash(raw.as_bytes()),
+                created_at: now,
+                expires_at: now + chrono::Duration::days(1),
+            })
+            .await
+            .expect("create refresh token");
+        (client_id.to_string(), raw)
+    }
+
+    fn refresh_form(client_id: &str, token: &str) -> String {
+        format!(
+            "grant_type=refresh_token&refresh_token={}&client_id={}",
+            token, client_id
+        )
+    }
+
+    #[tokio::test]
+    async fn sequential_reuse_of_rotated_token_revokes_surviving_family() {
+        let Some(app) = test_app().await else {
+            return;
+        };
+        let (client_id, raw1) = seed_refresh_token(&app).await;
+
+        // Legitimate rotation.
+        let (status, body) =
+            post_form(&app, "/oauth/token", None, &refresh_form(&client_id, &raw1)).await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let raw2 = body["refresh_token"]
+            .as_str()
+            .expect("new token")
+            .to_owned();
+
+        // AUD-004 sequential reuse: the already-rotated token is presented
+        // again (a copied token used by its thief, or a stale tab). The
+        // surviving replacement must be revoked, not left active.
+        let (status, body) =
+            post_form(&app, "/oauth/token", None, &refresh_form(&client_id, &raw1)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
+        assert_eq!(body["error"], "invalid_grant");
+        assert!(
+            body["error_description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("reuse"),
+            "body: {body}"
+        );
+
+        // The replacement family is dead. A revoked token was deleted
+        // without being recorded as used, so it presents as a plain
+        // invalid_grant (400) rather than a reuse detection (401).
+        let (status, body) =
+            post_form(&app, "/oauth/token", None, &refresh_form(&client_id, &raw2)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+        assert_eq!(body["error"], "invalid_grant");
+    }
+
+    #[tokio::test]
+    async fn concurrent_presentation_of_one_token_kills_family() {
+        let Some(app) = test_app().await else {
+            return;
+        };
+        let (client_id, raw1) = seed_refresh_token(&app).await;
+
+        // Two in-flight refreshes presenting the same token: exactly one
+        // rotation can win; the loser's duplicate insert must revoke the
+        // family (including the winner's fresh replacement) instead of
+        // erroring with a broken transaction and leaving it alive.
+        let (r1, r2) = {
+            let form = refresh_form(&client_id, &raw1);
+            tokio::join!(
+                post_form(&app, "/oauth/token", None, &form),
+                post_form(&app, "/oauth/token", None, &form),
+            )
+        };
+        let ok_count = usize::from(r1.0 == StatusCode::OK) + usize::from(r2.0 == StatusCode::OK);
+        assert_eq!(ok_count, 1, "responses: {r1:?} {r2:?}");
+        let raw2 = if r1.0 == StatusCode::OK { r1.1 } else { r2.1 }["refresh_token"]
+            .as_str()
+            .expect("new token")
+            .to_owned();
+
+        // Family revoked: the winner's replacement no longer refreshes.
+        let (status, body) =
+            post_form(&app, "/oauth/token", None, &refresh_form(&client_id, &raw2)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+        assert_eq!(body["error"], "invalid_grant");
     }
 }

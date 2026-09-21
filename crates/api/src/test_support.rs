@@ -166,3 +166,33 @@ pub(crate) async fn post_json(
     };
     (status, json)
 }
+
+/// POST a form-encoded body, optionally with a bearer token; return status and body.
+pub(crate) async fn post_form(
+    app: &TestApp,
+    uri: &str,
+    token: Option<&str>,
+    body: &str,
+) -> (StatusCode, serde_json::Value) {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/x-www-form-urlencoded");
+    if let Some(t) = token {
+        builder = builder.header("authorization", format!("Bearer {t}"));
+    }
+    let request = builder
+        .body(Body::from(body.to_owned()))
+        .expect("build request");
+    let response = app.router.clone().oneshot(request).await.expect("dispatch");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).expect("parse json body")
+    };
+    (status, json)
+}

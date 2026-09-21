@@ -382,6 +382,12 @@ pub trait OAuthRefreshTokenStorage: Send + Sync {
     ) -> Result<OAuthRefreshToken, StorageError>;
     async fn delete_refresh_token(&self, token_id: Uuid) -> Result<(), StorageError>;
     async fn delete_refresh_tokens_by_grant(&self, grant_id: Uuid) -> Result<(), StorageError>;
+    /// Resolve the grant an already-rotated (used) refresh token belonged to.
+    /// Sequential-reuse detection: `None` means the hash was never recorded.
+    async fn get_used_refresh_grant_by_hash(
+        &self,
+        hash: &[u8],
+    ) -> Result<Option<Uuid>, StorageError>;
     /// Atomically: delete old token, record it as used, create new token.
     async fn rotate_refresh_token(
         &self,
