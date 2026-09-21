@@ -17,12 +17,8 @@ export function RecoverySetupPage() {
   // Check if coming from password reset
   const isReset = searchParams.get("reset") === "true";
 
-  // OAuth parameters (passed through from signup)
+  // OAuth parameter (passed through from signup; only the signed state)
   const oauthState = searchParams.get("oauth");
-  const oauthClientId = searchParams.get("client_id");
-  const oauthClientName = searchParams.get("client_name");
-  const oauthScope = searchParams.get("scope");
-  const oauthKeysJwk = searchParams.get("keys_jwk");
 
   // Generate mnemonic once on mount
   const mnemonic = useMemo(() => generateRecoveryPhrase(), []);
@@ -52,25 +48,10 @@ export function RecoverySetupPage() {
       params.set("redirect", "/recovery-setup");
       if (oauthState) {
         params.set("oauth", oauthState);
-        params.set("client_id", oauthClientId || "");
-        params.set("client_name", oauthClientName || "");
-        params.set("scope", oauthScope || "");
-        if (oauthKeysJwk) {
-          params.set("keys_jwk", oauthKeysJwk);
-        }
       }
       navigate(`/login?${params.toString()}`, { replace: true });
     }
-  }, [
-    authToken,
-    rootKey,
-    navigate,
-    oauthState,
-    oauthClientId,
-    oauthClientName,
-    oauthScope,
-    oauthKeysJwk,
-  ]);
+  }, [authToken, rootKey, navigate, oauthState]);
 
   // If not authenticated at all, redirect to login
   if (!authToken) {
@@ -98,18 +79,10 @@ export function RecoverySetupPage() {
   }
 
   const handleContinue = () => {
-    // Build redirect destination
+    // Build redirect destination — only the signed state token is preserved;
+    // the consent page loads its context from the server.
     if (oauthState) {
-      const params = new URLSearchParams({
-        oauth: oauthState,
-        client_id: oauthClientId || "",
-        client_name: oauthClientName || "",
-        scope: oauthScope || "",
-      });
-      if (oauthKeysJwk) {
-        params.set("keys_jwk", oauthKeysJwk);
-      }
-      navigate(`/consent?${params.toString()}`);
+      navigate(`/consent?oauth=${encodeURIComponent(oauthState)}`);
     } else {
       navigate("/");
     }

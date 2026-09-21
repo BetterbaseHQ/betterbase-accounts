@@ -12,12 +12,10 @@ export function LoginPage() {
   const [searchParams] = useSearchParams();
   const { setAuth } = useAuth();
 
-  // Check for OAuth flow - if oauth param exists, redirect to consent after login
+  // Check for OAuth flow - if oauth param exists, redirect to consent after
+  // login. Only the signed state token is preserved; the consent page loads
+  // its context from the server (AUD-005).
   const oauthState = searchParams.get("oauth");
-  const oauthClientId = searchParams.get("client_id");
-  const oauthClientName = searchParams.get("client_name");
-  const oauthScope = searchParams.get("scope");
-  const oauthKeysJwk = searchParams.get("keys_jwk");
 
   // Reauth mode - user is already logged in but needs to re-enter password
   // (e.g., to derive export key for scoped encryption)
@@ -27,16 +25,7 @@ export function LoginPage() {
   // Normal redirect or consent page redirect for OAuth
   const getRedirectTo = () => {
     if (oauthState) {
-      const params = new URLSearchParams({
-        oauth: oauthState,
-        client_id: oauthClientId || "",
-        client_name: oauthClientName || "",
-        scope: oauthScope || "",
-      });
-      if (oauthKeysJwk) {
-        params.set("keys_jwk", oauthKeysJwk);
-      }
-      return `/consent?${params.toString()}`;
+      return `/consent?oauth=${encodeURIComponent(oauthState)}`;
     }
     return getSafeRedirect(searchParams.get("redirect"));
   };

@@ -217,22 +217,87 @@ pub async fn handle_oauth_authorize(
         }
     };
 
-    // Redirect to SPA consent page (must match Go server's URL format)
-    let client_name = client.name.clone();
+    // Redirect to SPA consent page. Only the signed state token is passed:
+    // the consent page fetches its display and wrapping context from
+    // /oauth/consent-context keyed by this token, so nothing trust-relevant
+    // travels as an unsigned URL parameter (AUD-005).
     let mut serializer = form_urlencoded::Serializer::new(String::new());
     serializer.append_pair("oauth", &state_token);
-    serializer.append_pair("client_id", &client_id_str);
-    serializer.append_pair("client_name", &client_name);
-    serializer.append_pair("scope", scope);
-    if let Some(kjwk) = &q.keys_jwk {
-        serializer.append_pair("keys_jwk", kjwk);
-    }
     let query = serializer.finish();
     let consent_url = format!("{}/consent?{}", state.config.web_base_url, query);
     Redirect::to(&consent_url).into_response()
 }
 
 // ─── Consent ─────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ConsentContextQuery {
+    pub oauth_state: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct ConsentContextResponse {
+    pub client_id: String,
+    pub client_name: String,
+    pub scope: String,
+    pub redirect_uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keys_jwk: Option<serde_json::Value>,
+}
+
+/// GET /oauth/consent-context (auth-gated)
+///
+/// Server-validated authorization context for the consent page, derived from
+/// the signed OAuth state. The consent UI must use this for the displayed
+/// client/scope and for the key-wrapping recipient — never unsigned URL
+/// parameters (AUD-005).
+pub async fn handle_oauth_consent_context(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ConsentContextQuery>,
+) -> Response {
+    // Auth-gated: only the signed-in account may read its authorization context.
+    if let Err(e) = extract_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let oauth_state = match state.jwt.validate_oauth_state_token(&q.oauth_state) {
+        Ok(c) => c,
+        Err(_) => {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "invalid or expired oauth_state",
+            );
+        }
+    };
+
+    let client_id = match Uuid::parse_str(&oauth_state.client_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return write_oauth_error(StatusCode::BAD_REQUEST, "invalid_request", "invalid client");
+        }
+    };
+
+    let client = match state.storage.get_oauth_client(client_id).await {
+        Ok(c) => c,
+        Err(_) => {
+            return write_oauth_error(StatusCode::BAD_REQUEST, "invalid_request", "unknown client");
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(ConsentContextResponse {
+            client_id: oauth_state.client_id,
+            client_name: client.name,
+            scope: oauth_state.scope,
+            redirect_uri: oauth_state.redirect_uri,
+            keys_jwk: oauth_state.keys_jwk,
+        }),
+    )
+        .into_response()
+}
 
 #[derive(Deserialize)]
 pub struct ConsentBody {
@@ -307,6 +372,49 @@ pub async fn handle_oauth_consent(
             }),
         )
             .into_response();
+    }
+
+    // AUD-005: bind the key-delivery recipient to the signed authorization
+    // state. A wrapped-keys payload may only be delivered when the state
+    // carries a keys_jwk recipient, and its thumbprint must match that signed
+    // recipient — never an independently supplied one. For the sync flow (the
+    // only flow where the consent page delivers keys) an approved consent
+    // must carry the pair: silence would be a silent downgrade of the
+    // client's extended PKCE flow.
+    let sync_key_delivery =
+        oauth_state.keys_jwk.is_some() && oauth_state.scope.split(' ').any(|s| s == "sync");
+    if req.keys_jwe.is_some() || req.keys_jwk_thumbprint.is_some() || sync_key_delivery {
+        let Some(signed_jwk) = &oauth_state.keys_jwk else {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "authorization request did not include a key recipient",
+            );
+        };
+        let (Some(_), Some(thumbprint)) = (&req.keys_jwe, &req.keys_jwk_thumbprint) else {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "keys_jwe and keys_jwk_thumbprint must be supplied together",
+            );
+        };
+        let expected = match jwk_thumbprint_b64(signed_jwk) {
+            Ok(t) => t,
+            Err(_) => {
+                return write_oauth_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "invalid keys_jwk in authorization state",
+                );
+            }
+        };
+        if !constant_time_str_eq(thumbprint, &expected) {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "keys_jwk_thumbprint does not match the authorization request",
+            );
+        }
     }
 
     // Store wrapped scoped key if provided (first-write-wins, matching Go behavior)
@@ -1088,6 +1196,29 @@ fn verify_pkce(verifier: &str, challenge: &str) -> bool {
     computed.as_bytes().ct_eq(challenge.as_bytes()).into()
 }
 
+/// RFC 7638 JWK thumbprint (SHA-256, base64url) for an EC P-256 public key.
+/// Mirrors the browser's `computeJwkThumbprint` for the recipient binding.
+fn jwk_thumbprint_b64(jwk: &serde_json::Value) -> Result<String, String> {
+    let kty = jwk.get("kty").and_then(|v| v.as_str());
+    let crv = jwk.get("crv").and_then(|v| v.as_str());
+    let x = jwk.get("x").and_then(|v| v.as_str());
+    let y = jwk.get("y").and_then(|v| v.as_str());
+    match (kty, crv, x, y) {
+        (Some("EC"), Some("P-256"), Some(x), Some(y)) => {
+            // Required members in lexicographic order per RFC 7638 §3.2.
+            let input = format!("{{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"{x}\",\"y\":\"{y}\"}}");
+            Ok(B64URL.encode(Sha256::digest(input.as_bytes())))
+        }
+        _ => Err("not an EC P-256 public key".to_owned()),
+    }
+}
+
+/// Constant-time string comparison (thumbprints are public but compare
+/// uniformly anyway to avoid short-circuit leaks).
+fn constant_time_str_eq(a: &str, b: &str) -> bool {
+    a.as_bytes().ct_eq(b.as_bytes()).into()
+}
+
 fn verify_pkce_with_thumbprint(verifier: &str, thumbprint: &str, challenge: &str) -> bool {
     let mut input = verifier.as_bytes().to_vec();
     input.extend_from_slice(thumbprint.as_bytes());
@@ -1226,4 +1357,276 @@ fn write_oauth_error(status: StatusCode, error: &str, description: &str) -> Resp
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod consent_tests {
+    use axum::http::StatusCode;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+    use serde_json::json;
+
+    use crate::test_support::{get_json, post_json, test_app, TestApp, TEST_ISSUER};
+
+    use super::*;
+
+    const REDIRECT_URI: &str = "http://localhost:5381/";
+
+    fn keys_jwk() -> serde_json::Value {
+        json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": B64URL.encode([1u8; 32]),
+            "y": B64URL.encode([2u8; 32]),
+        })
+    }
+
+    /// Known-answer vector pinning the RFC 7638 construction shared by the
+    /// server, the browser (`computeJwkThumbprint`), and the SDK. A drift in
+    /// any implementation breaks extended PKCE at runtime only.
+    #[test]
+    fn jwk_thumbprint_matches_the_shared_known_answer() {
+        let jwk = keys_jwk();
+        assert_eq!(
+            jwk_thumbprint_b64(&jwk).expect("thumbprint"),
+            // SHA-256 over {"crv":"P-256","kty":"EC","x":"AQEB...","y":"AgIC..."}
+            "kOFKxjJdOqJD5G4Yuw-cxHe64VGyxKEO_hoV83QfGj0"
+        );
+    }
+
+    #[tokio::test]
+    async fn consent_rejects_partial_key_delivery_pair() {
+        let Some((app, client_id, token)) = app_with_client_and_account().await else {
+            return;
+        };
+        let state = state_token(&app, &client_id, Some(keys_jwk()));
+
+        // thumbprint without keys_jwe
+        let (status, body) = post_json(
+            &app,
+            "/oauth/consent",
+            Some(&token),
+            &json!({
+                "oauth_state": state.clone(),
+                "approved": true,
+                "keys_jwk_thumbprint": "irrelevant",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error_description"],
+            "keys_jwe and keys_jwk_thumbprint must be supplied together"
+        );
+
+        // keys_jwe without thumbprint
+        let (status, _) = post_json(
+            &app,
+            "/oauth/consent",
+            Some(&token),
+            &json!({
+                "oauth_state": state,
+                "approved": true,
+                "keys_jwe": "some-jwe",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn consent_requires_key_delivery_for_the_sync_flow() {
+        let Some((app, client_id, token)) = app_with_client_and_account().await else {
+            return;
+        };
+        // The signed state carries a recipient and the sync scope, but the
+        // consent posts no key delivery: a silent downgrade must fail loudly.
+        let state = state_token(&app, &client_id, Some(keys_jwk()));
+
+        let (status, body) = post_json(
+            &app,
+            "/oauth/consent",
+            Some(&token),
+            &json!({
+                "oauth_state": state,
+                "approved": true,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error_description"],
+            "keys_jwe and keys_jwk_thumbprint must be supplied together"
+        );
+    }
+
+    async fn app_with_client_and_account() -> Option<(TestApp, String, String)> {
+        let app = test_app().await?;
+        let client_id = Uuid::new_v4();
+        app.storage
+            .create_oauth_client(&OAuthClient {
+                id: client_id,
+                name: "Test Client".to_owned(),
+                secret_hash: None,
+                redirect_uris: vec![REDIRECT_URI.to_owned()],
+                allowed_scopes: vec!["openid".to_owned(), "sync".to_owned()],
+                created_at: chrono::Utc::now(),
+            })
+            .await
+            .expect("create client");
+
+        let account = app
+            .storage
+            .get_or_create_account(TEST_ISSUER, "consenter", "consenter@example.test")
+            .await
+            .expect("create account");
+        let token = app.auth_token(&account.id.to_string());
+        Some((app, client_id.to_string(), token))
+    }
+
+    fn state_token(app: &TestApp, client_id: &str, keys_jwk: Option<serde_json::Value>) -> String {
+        app.jwt
+            .create_oauth_state_token(OAuthStateClaims::new(
+                client_id.to_owned(),
+                REDIRECT_URI.to_owned(),
+                "openid sync".to_owned(),
+                "client-state".to_owned(),
+                "challenge".to_owned(),
+                "S256".to_owned(),
+                keys_jwk,
+            ))
+            .expect("state token")
+    }
+
+    #[tokio::test]
+    async fn consent_rejects_thumbprint_that_does_not_match_signed_recipient() {
+        let Some((app, client_id, token)) = app_with_client_and_account().await else {
+            return;
+        };
+        let state = state_token(&app, &client_id, Some(keys_jwk()));
+
+        let (status, body) = post_json(
+            &app,
+            "/oauth/consent",
+            Some(&token),
+            &json!({
+                "oauth_state": state,
+                "approved": true,
+                "keys_jwe": "some-jwe",
+                "keys_jwk_thumbprint": "attacker-chosen-thumbprint",
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error_description"],
+            "keys_jwk_thumbprint does not match the authorization request"
+        );
+    }
+
+    #[tokio::test]
+    async fn consent_accepts_thumbprint_matching_signed_recipient() {
+        let Some((app, client_id, token)) = app_with_client_and_account().await else {
+            return;
+        };
+        let jwk = keys_jwk();
+        let state = state_token(&app, &client_id, Some(jwk.clone()));
+        let thumbprint = jwk_thumbprint_b64(&jwk).expect("thumbprint");
+
+        let (status, body) = post_json(
+            &app,
+            "/oauth/consent",
+            Some(&token),
+            &json!({
+                "oauth_state": state,
+                "approved": true,
+                "keys_jwe": "some-jwe",
+                "keys_jwk_thumbprint": thumbprint,
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let redirect = body["redirect_uri"].as_str().expect("redirect");
+        assert!(redirect.starts_with(REDIRECT_URI));
+        assert!(redirect.contains("code="));
+    }
+
+    #[tokio::test]
+    async fn consent_rejects_key_delivery_without_a_signed_recipient() {
+        let Some((app, client_id, token)) = app_with_client_and_account().await else {
+            return;
+        };
+        let state = state_token(&app, &client_id, None);
+
+        let (status, body) = post_json(
+            &app,
+            "/oauth/consent",
+            Some(&token),
+            &json!({
+                "oauth_state": state,
+                "approved": true,
+                "keys_jwe": "some-jwe",
+                "keys_jwk_thumbprint": "whatever",
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error_description"],
+            "authorization request did not include a key recipient"
+        );
+    }
+
+    #[tokio::test]
+    async fn consent_context_returns_fields_from_the_signed_state() {
+        let Some((app, client_id, token)) = app_with_client_and_account().await else {
+            return;
+        };
+        let state = state_token(&app, &client_id, Some(keys_jwk()));
+
+        let (status, body) = get_json(
+            &app,
+            &format!("/oauth/consent-context?oauth_state={state}"),
+            Some(&token),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["client_id"], client_id);
+        assert_eq!(body["client_name"], "Test Client");
+        assert_eq!(body["scope"], "openid sync");
+        assert_eq!(body["redirect_uri"], REDIRECT_URI);
+        assert_eq!(body["keys_jwk"]["kty"], "EC");
+    }
+
+    #[tokio::test]
+    async fn consent_context_rejects_invalid_state() {
+        let Some((app, _client_id, token)) = app_with_client_and_account().await else {
+            return;
+        };
+        let (status, _) = get_json(
+            &app,
+            "/oauth/consent-context?oauth_state=not-a-jwt",
+            Some(&token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn consent_context_requires_authentication() {
+        let Some((app, client_id, _token)) = app_with_client_and_account().await else {
+            return;
+        };
+        let state = state_token(&app, &client_id, None);
+        let (status, _) = get_json(
+            &app,
+            &format!("/oauth/consent-context?oauth_state={state}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
 }

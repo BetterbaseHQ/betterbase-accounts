@@ -19,7 +19,6 @@ import {
   unwrapWithRootKey,
   encryptAsJWE,
   computeJwkThumbprint,
-  parseJwkFromBase64Url,
   buildScopedKeyJWK,
   computeScopedKeyKid,
   isValidP256PublicKey,
@@ -29,6 +28,14 @@ import {
   decryptAppKeypairBlob,
 } from "@/lib/crypto";
 import type { ScopedKeyJWK } from "@/lib/crypto";
+
+/** Server-validated authorization context from /oauth/consent-context. */
+interface ConsentContext {
+  clientId: string;
+  clientName: string;
+  scopes: string[];
+  keysJwk?: { kty: string; crv: string; x: string; y: string };
+}
 
 /**
  * Recover an existing app keypair from the server, or generate a fresh one.
@@ -71,32 +78,25 @@ export function ConsentPage() {
   const { authToken, userId, email: loginIdentifier, rootKey, hasRootKey } = useAuth();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [context, setContext] = useState<ConsentContext | null>(null);
 
-  // OAuth state token from server (contains all validated OAuth params)
+  // Only the signed state token is read from the URL. Everything the page
+  // displays or uses for key wrapping comes from the server-validated
+  // authorization context (/oauth/consent-context), never from unsigned URL
+  // parameters.
   const oauthState = searchParams.get("oauth");
-  const clientId = searchParams.get("client_id") || "";
-  const clientName = searchParams.get("client_name") || "Unknown Application";
-  const scopeString = searchParams.get("scope") || "profile";
-  const scopes = scopeString.split(" ");
 
-  // Server-validated keys_jwk passed as URL parameter (not parsed from JWT)
-  const keysJwkParam = searchParams.get("keys_jwk");
+  const scopes = context?.scopes ?? [];
 
   // Check if sync scope is requested with keys_jwk (require key derivation)
   const hasSyncScope = scopes.includes("sync");
-  const needsKeyDerivation = hasSyncScope && !!keysJwkParam;
+  const needsKeyDerivation = hasSyncScope && !!context?.keysJwk;
 
-  // Build login URL with all OAuth params preserved (including keys_jwk)
+  // Build login URL with the signed state preserved
   const buildLoginUrl = (reauth: boolean = false) => {
     const params = new URLSearchParams({
       oauth: oauthState || "",
-      client_id: clientId,
-      client_name: clientName,
-      scope: scopeString,
     });
-    if (keysJwkParam) {
-      params.set("keys_jwk", keysJwkParam);
-    }
     if (reauth && loginIdentifier) {
       params.set("reauth", "true");
       params.set("username", loginIdentifier);
@@ -104,31 +104,47 @@ export function ConsentPage() {
     return `/login?${params.toString()}`;
   };
 
+  // Load the server-validated authorization context once authenticated
   useEffect(() => {
-    // If not logged in, redirect to login with OAuth params
+    if (!authToken || !oauthState || context) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const ctx = await api.getConsentContext(oauthState);
+        if (cancelled) return;
+        setContext({
+          clientId: ctx.client_id,
+          clientName: ctx.client_name,
+          scopes: ctx.scope.split(" ").filter(Boolean),
+          keysJwk: ctx.keys_jwk,
+        });
+      } catch (err) {
+        if (cancelled) return;
+        setError(formatError(err, "Failed to load authorization request"));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, oauthState, context]);
+
+  useEffect(() => {
+    // If not logged in, redirect to login with the signed OAuth state
     if (!authToken && oauthState) {
       navigate(buildLoginUrl());
     }
-  }, [authToken, oauthState, clientName, scopeString, keysJwkParam, navigate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authToken, oauthState, navigate]);
 
-  // If sync scope with keys_jwk is requested but we don't have the root key (page refresh),
-  // redirect to login to re-authenticate with reauth mode for better UX
+  // If sync scope with keys_jwk is requested but we don't have the root key
+  // (page refresh), redirect to login to re-authenticate with reauth mode
+  // for better UX
   useEffect(() => {
     if (authToken && needsKeyDerivation && !hasRootKey && oauthState) {
       navigate(buildLoginUrl(true));
     }
-  }, [
-    authToken,
-    needsKeyDerivation,
-    hasRootKey,
-    oauthState,
-    clientId,
-    clientName,
-    scopeString,
-    keysJwkParam,
-    loginIdentifier,
-    navigate,
-  ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authToken, needsKeyDerivation, hasRootKey, oauthState, loginIdentifier, navigate]);
 
   const scopeDescriptions: Record<string, string> = {
     openid: "Verify your identity",
@@ -138,18 +154,21 @@ export function ConsentPage() {
     files: "Upload and download large files",
   };
 
-  const getScopeDescription = (scope: string): string => {
+  const getScopeDescription = (scope: string) => {
     return scopeDescriptions[scope] || scope;
   };
 
   const handleConsent = async (approved: boolean) => {
-    if (!oauthState || !userId) return;
+    if (!oauthState || !userId || !context) return;
 
-    // If sync scope with keys_jwk is requested but we don't have root key, redirect to reauth
+    // If sync scope with keys_jwk is requested but we don't have root key,
+    // redirect to reauth
     if (approved && needsKeyDerivation && !rootKey) {
       navigate(buildLoginUrl(true));
       return;
     }
+
+    const { clientId, keysJwk } = context;
 
     setLoading(true);
     setError(null);
@@ -161,15 +180,19 @@ export function ConsentPage() {
       let appPublicKeyJwk: string | undefined;
       let wrappedScopedKeyB64: string | undefined;
 
-      // If sync scope is requested with keys_jwk and approved, derive and encrypt key
+      // If sync scope is requested with keys_jwk and approved, derive and
+      // encrypt key. The recipient is the server-validated keys_jwk from the
+      // signed authorization context.
       if (approved && needsKeyDerivation && rootKey && clientId) {
-        if (!keysJwkParam) {
+        if (!keysJwk) {
           throw new Error(
             "Missing keys_jwk - app must provide ephemeral public key for encryption",
           );
         }
 
-        const recipientPublicKey = parseJwkFromBase64Url(keysJwkParam);
+        // The recipient JWK arrives as an object from the server-validated
+        // context (already parsed from the signed state).
+        const recipientPublicKey = keysJwk as unknown as JsonWebKey;
 
         if (!isValidP256PublicKey(recipientPublicKey)) {
           throw new Error("Invalid recipient public key");
@@ -219,7 +242,8 @@ export function ConsentPage() {
           y: publicKeyJwk.y,
         });
 
-        // Build scoped keys payload including both the symmetric key and the app keypair
+        // Build scoped keys payload including both the symmetric key and the
+        // app keypair
         const scopedKeys: Record<string, ScopedKeyJWK | JsonWebKey> = {
           [clientId]: buildScopedKeyJWK(scopedKey, kid),
           "app-keypair": {
@@ -232,10 +256,10 @@ export function ConsentPage() {
           },
         };
 
-        // Encrypt to the app's ephemeral public key
+        // Encrypt to the app's ephemeral public key from the signed context
         keysJWE = await encryptAsJWE(scopedKeys, recipientPublicKey);
 
-        // Compute the thumbprint for PKCE binding
+        // Compute the thumbprint of the signed recipient for PKCE binding
         keysJWKThumbprint = await computeJwkThumbprint(recipientPublicKey);
       }
 
@@ -289,6 +313,32 @@ export function ConsentPage() {
     );
   }
 
+  // Authenticated but the server-validated context has not loaded yet
+  if (!context) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-4">
+        <Card className="w-full max-w-md">
+          <CardHeader className="text-center">
+            {error ? (
+              <>
+                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
+                  <AlertTriangle className="h-6 w-6 text-destructive" />
+                </div>
+                <CardTitle className="text-xl">Invalid Request</CardTitle>
+                <CardDescription>{error}</CardDescription>
+              </>
+            ) : (
+              <>
+                <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
+                <CardDescription className="mt-4">Loading authorization request...</CardDescription>
+              </>
+            )}
+          </CardHeader>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center p-4">
       <Card className="w-full max-w-md">
@@ -296,13 +346,13 @@ export function ConsentPage() {
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
             <Shield className="h-6 w-6 text-primary" />
           </div>
-          <CardTitle className="text-xl">Authorize {clientName}</CardTitle>
+          <CardTitle className="text-xl">Authorize {context.clientName}</CardTitle>
           <CardDescription>This application wants to access your account</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
             <p className="text-sm font-medium text-muted-foreground">
-              This will allow {clientName} to:
+              This will allow {context.clientName} to:
             </p>
             <ul className="space-y-2">
               {scopes.map((scope) => (

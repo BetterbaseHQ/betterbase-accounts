@@ -40,6 +40,12 @@ impl AccountStorage for PostgresStorage {
         username: &str,
         email: &str,
     ) -> Result<Account, StorageError> {
+        // Idempotent account reservation for signup (AUD-006): the
+        // (issuer, username) conflict path returns the existing row, which is
+        // only acceptable when it is an exact retry with the same email. Any
+        // other collision — a different email claiming an existing username,
+        // or a different username claiming an existing email — must not hand
+        // back an existing account for the caller to overwrite.
         let row = sqlx::query_as!(
             AccountRow,
             r#"
@@ -56,7 +62,15 @@ impl AccountStorage for PostgresStorage {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(StorageError::from)?;
+        .map_err(|e| match e {
+            // Unique violation on (issuer, email): same email under a new username.
+            sqlx::Error::Database(db) if db.is_unique_violation() => StorageError::AccountExists,
+            other => StorageError::Database(other),
+        })?;
+
+        if row.email != email {
+            return Err(StorageError::AccountExists);
+        }
 
         Ok(row.into())
     }
@@ -158,11 +172,16 @@ impl AccountStorage for PostgresStorage {
         opaque_record: &[u8],
         wrapped_root_key: &[u8],
     ) -> Result<(), StorageError> {
+        // Compare-and-set completion for signup (AUD-006): the initial
+        // registration may only write credentials to an account that is not
+        // yet registered. Concurrent or replayed completions must not replace
+        // an existing account's credentials. (Recovery uses
+        // update_registration / update_registration_and_root_key instead.)
         let rows = sqlx::query!(
             r#"
             UPDATE accounts
             SET opaque_record = $2, wrapped_root_key = $3
-            WHERE id = $1
+            WHERE id = $1 AND opaque_record IS NULL
             "#,
             account_id,
             opaque_record,
@@ -173,7 +192,16 @@ impl AccountStorage for PostgresStorage {
         .map_err(StorageError::from)?;
 
         if rows.rows_affected() == 0 {
-            return Err(StorageError::AccountNotFound);
+            let registered =
+                sqlx::query!("SELECT 1 AS one FROM accounts WHERE id = $1", account_id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(StorageError::from)?;
+            return Err(if registered.is_some() {
+                StorageError::AccountExists
+            } else {
+                StorageError::AccountNotFound
+            });
         }
         Ok(())
     }
@@ -418,6 +446,91 @@ mod tests {
         storage.delete_account(account.id).await.expect("delete");
         assert!(matches!(
             storage.get_account_by_id(account.id).await.unwrap_err(),
+            StorageError::AccountNotFound
+        ));
+    }
+}
+
+#[cfg(test)]
+mod reservation_tests {
+    use uuid::Uuid;
+
+    use super::super::test_support::*;
+
+    #[tokio::test]
+    async fn username_conflict_with_a_different_email_is_rejected() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        storage
+            .get_or_create_account(TEST_ISSUER, "alice", TEST_EMAIL)
+            .await
+            .expect("create account");
+        assert!(matches!(
+            storage
+                .get_or_create_account(TEST_ISSUER, "alice", "mallory@example.com")
+                .await
+                .unwrap_err(),
+            StorageError::AccountExists
+        ));
+    }
+
+    #[tokio::test]
+    async fn email_conflict_with_a_different_username_is_rejected() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        storage
+            .get_or_create_account(TEST_ISSUER, "alice", TEST_EMAIL)
+            .await
+            .expect("create account");
+        assert!(matches!(
+            storage
+                .get_or_create_account(TEST_ISSUER, "mallory", TEST_EMAIL)
+                .await
+                .unwrap_err(),
+            StorageError::AccountExists
+        ));
+    }
+
+    #[tokio::test]
+    async fn signup_finalize_is_compare_and_set_on_unregistered_accounts() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let account = create_account(&storage).await;
+        storage
+            .finalize_registration_with_root_key(account.id, b"record-1", &[0x01; 41])
+            .await
+            .expect("first finalize");
+
+        // A second completion (concurrent signup, replayed finalize, or
+        // attacker racing a victim) must not replace the credentials.
+        assert!(matches!(
+            storage
+                .finalize_registration_with_root_key(account.id, b"record-2", &[0x02; 41])
+                .await
+                .unwrap_err(),
+            StorageError::AccountExists
+        ));
+
+        let reloaded = storage.get_account_by_id(account.id).await.expect("reload");
+        assert_eq!(
+            reloaded.opaque_record.as_deref(),
+            Some(b"record-1".as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn signup_finalize_for_missing_account_returns_not_found() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        assert!(matches!(
+            storage
+                .finalize_registration_with_root_key(Uuid::new_v4(), b"record", &[0x01; 41])
+                .await
+                .unwrap_err(),
             StorageError::AccountNotFound
         ));
     }

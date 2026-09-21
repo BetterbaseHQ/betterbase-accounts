@@ -6,6 +6,9 @@ pub mod handlers;
 pub mod state;
 pub mod verification;
 
+#[cfg(test)]
+mod test_support;
+
 use axum::{
     http::{header, HeaderValue, Method},
     middleware,
@@ -116,6 +119,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         // OAuth
         .route("/oauth/authorize", get(oauth::handle_oauth_authorize))
+        .route(
+            "/oauth/consent-context",
+            get(oauth::handle_oauth_consent_context),
+        )
         .route("/oauth/consent", post(oauth::handle_oauth_consent))
         .route("/oauth/token", post(oauth::handle_oauth_token))
         .route("/oauth/userinfo", get(oauth::handle_oauth_userinfo))

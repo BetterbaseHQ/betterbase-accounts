@@ -475,6 +475,11 @@ pub trait CleanupStorage: Send + Sync {
     async fn cleanup_used_refresh_tokens(&self, older_than: Duration) -> Result<(), StorageError>;
     async fn cleanup_expired_verification_codes(&self) -> Result<(), StorageError>;
     async fn cleanup_expired_verification_tokens(&self) -> Result<(), StorageError>;
+    /// Delete account reservations (pre-created rows) that never completed
+    /// signup. Prevents abandoned inits from permanently squatting usernames
+    /// and emails now that registration can no longer overwrite them.
+    async fn cleanup_unregistered_accounts(&self, older_than: Duration)
+        -> Result<(), StorageError>;
 }
 
 /// Atomic composite operations that span multiple domain entities.

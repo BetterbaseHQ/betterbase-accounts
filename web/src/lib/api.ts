@@ -198,6 +198,18 @@ export const api = {
       `/oauth/grant-keypair?client_id=${encodeURIComponent(clientId)}`,
     ),
 
+  // Server-validated authorization context for the consent page, derived from
+  // the signed OAuth state. Never trust unsigned URL parameters for client
+  // identity, display fields, or the key-wrapping recipient.
+  getConsentContext: (oauthState: string) =>
+    getAuth<{
+      client_id: string;
+      client_name: string;
+      scope: string;
+      redirect_uri: string;
+      keys_jwk?: { kty: string; crv: string; x: string; y: string };
+    }>(`/oauth/consent-context?oauth_state=${encodeURIComponent(oauthState)}`),
+
   storeRecoveryBlob: (blob: string) => postAuth<void>("/v1/accounts/recovery-blob", { blob }),
 
   getRecoveryBlob: (email: string, verificationToken: string) =>

@@ -231,6 +231,15 @@ pub async fn run(config: AppConfig) -> Result<()> {
             if let Err(e) = cleanup_storage.cleanup_expired_verification_tokens().await {
                 tracing::warn!("cleanup_expired_verification_tokens error: {e}");
             }
+            // Reclaim account reservations that never completed signup (kept
+            // for a week — far longer than the signup funnel — so abandoned
+            // inits cannot permanently squat usernames/emails).
+            if let Err(e) = cleanup_storage
+                .cleanup_unregistered_accounts(Duration::from_secs(7 * 24 * 3600))
+                .await
+            {
+                tracing::warn!("cleanup_unregistered_accounts error: {e}");
+            }
         }
     });
 

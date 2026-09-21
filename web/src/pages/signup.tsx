@@ -43,24 +43,16 @@ export function SignupPage() {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  // Check for OAuth flow - if oauth param exists, redirect to consent after signup
+  // Check for OAuth flow - if oauth param exists, redirect to consent after
+  // signup. Only the signed state token is preserved; the consent page loads
+  // its context from the server.
   const oauthState = searchParams.get("oauth");
-  const oauthClientId = searchParams.get("client_id");
-  const oauthClientName = searchParams.get("client_name");
-  const oauthScope = searchParams.get("scope");
-  const oauthKeysJwk = searchParams.get("keys_jwk");
 
-  // Always redirect to recovery-setup after signup, preserving OAuth params
+  // Always redirect to recovery-setup after signup, preserving the signed state
   const getRedirectTo = () => {
     const params = new URLSearchParams();
     if (oauthState) {
       params.set("oauth", oauthState);
-      params.set("client_id", oauthClientId || "");
-      params.set("client_name", oauthClientName || "");
-      params.set("scope", oauthScope || "");
-      if (oauthKeysJwk) {
-        params.set("keys_jwk", oauthKeysJwk);
-      }
     }
     const query = params.toString();
     return `/recovery-setup${query ? "?" + query : ""}`;

@@ -92,7 +92,7 @@ All routes are immutable v1 contracts -- paths must not change without a version
 | Root key | `GET/PUT /v1/accounts/root-key`, `GET/PUT /v1/accounts/grants/wrapped-keys`, `POST /v1/accounts/rotate-root-key` |
 | Password change | `POST /v1/accounts/password/change/{init,verify,complete}` |
 | Recovery | `POST /v1/accounts/recovery-blob`, `POST /v1/accounts/recovery-blob/fetch`, `POST /v1/accounts/recover/{init,finalize}` |
-| OAuth | `GET /oauth/authorize`, `POST /oauth/{consent,token}`, `GET /oauth/userinfo`, `POST /oauth/mailbox`, `GET /oauth/grant-keypair` |
+| OAuth | `GET /oauth/authorize`, `POST /oauth/{consent,token}`, `GET /oauth/consent-context`, `GET /oauth/userinfo`, `POST /oauth/mailbox`, `GET /oauth/grant-keypair` |
 | JWKS | `GET /.well-known/jwks.json` |
 | User lookups | `GET /v1/users/{username}/keys/{client_id}`, `GET /v1/users/by-thumbprint/{thumbprint}` |
 | Discovery | `GET /.well-known/betterbase`, `GET /.well-known/webfinger` |
