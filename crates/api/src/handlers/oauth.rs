@@ -257,7 +257,7 @@ pub async fn handle_oauth_consent_context(
     Query(q): Query<ConsentContextQuery>,
 ) -> Response {
     // Auth-gated: only the signed-in account may read its authorization context.
-    if let Err(e) = extract_auth(&state, &headers) {
+    if let Err(e) = extract_auth(&state, &headers).await {
         return e.into_response();
     }
 
@@ -324,7 +324,7 @@ pub async fn handle_oauth_consent(
     headers: HeaderMap,
     Json(req): Json<ConsentBody>,
 ) -> Response {
-    let auth_ctx = match extract_auth(&state, &headers) {
+    let auth_ctx = match extract_auth(&state, &headers).await {
         Ok(ctx) => ctx,
         Err(e) => return e.into_response(),
     };
@@ -1023,7 +1023,7 @@ pub async fn handle_grant_keypair(
     headers: HeaderMap,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<GrantKeypairResponse>, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
 
     let client_id_str = q
         .get("client_id")
@@ -1113,7 +1113,7 @@ pub async fn handle_user_by_thumbprint(
     Path(thumbprint): Path<String>,
 ) -> Result<Json<UserByThumbprintResponse>, ApiError> {
     // Requires auth token
-    let _auth_ctx = extract_auth(&state, &headers)?;
+    let _auth_ctx = extract_auth(&state, &headers).await?;
 
     // Validate thumbprint is non-empty base64url (anti-enumeration: return 404 for bad format)
     if thumbprint.is_empty()
@@ -1275,7 +1275,7 @@ fn generate_random_token() -> String {
     B64URL.encode(bytes)
 }
 
-fn sha256_hash(data: &[u8]) -> Vec<u8> {
+pub(crate) fn sha256_hash(data: &[u8]) -> Vec<u8> {
     Sha256::digest(data).to_vec()
 }
 

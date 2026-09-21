@@ -20,7 +20,7 @@ pub async fn handle_password_change_init(
     headers: HeaderMap,
     Json(req): Json<PasswordChangeInitRequest>,
 ) -> Result<Json<PasswordChangeInitResponse>, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
 
     // Load account to get existing OPAQUE record
     let account = state.storage.get_account_by_id(auth_ctx.account_id).await?;
@@ -75,7 +75,7 @@ pub async fn handle_password_change_verify(
     headers: HeaderMap,
     Json(req): Json<PasswordChangeVerifyRequest>,
 ) -> Result<Json<PasswordChangeVerifyResponse>, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
 
     // Validate login token
     let state_id_str = state
@@ -152,7 +152,7 @@ pub async fn handle_password_change_complete(
     headers: HeaderMap,
     Json(req): Json<PasswordChangeCompleteRequest>,
 ) -> Result<Json<AuthResponse>, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
 
     let state_id_str = state
         .jwt
@@ -202,9 +202,17 @@ pub async fn handle_password_change_complete(
         )
         .await?;
 
+    // AUD-011: the password change must revoke prior sessions — refresh
+    // families are deleted and auth JWTs minted before the bump are
+    // fenced at validation. The completion response carries a fresh
+    // token minted under the new version for this device.
+    let new_version = state
+        .storage
+        .revoke_account_sessions(reg_state.account_id)
+        .await?;
     let new_auth_token = state
         .jwt
-        .create_auth_token(&reg_state.account_id.to_string())
+        .create_auth_token(&reg_state.account_id.to_string(), new_version)
         .map_err(|_| ApiError::internal())?;
 
     Ok(Json(AuthResponse {

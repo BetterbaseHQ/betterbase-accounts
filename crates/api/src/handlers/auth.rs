@@ -191,9 +191,10 @@ pub async fn handle_password_finalize(
         )
         .await?;
 
+    // Fresh registration: the account's credentials version is the default 0.
     let auth_token = state
         .jwt
-        .create_auth_token(&reg_state.account_id.to_string())
+        .create_auth_token(&reg_state.account_id.to_string(), 0)
         .map_err(|_| ApiError::internal())?;
 
     Ok(Json(AuthResponse {
@@ -340,9 +341,14 @@ pub async fn handle_login_finalize(
         .clear_login_attempts(&state.config.issuer, &login_state.username)
         .await;
 
+    let credentials_version = state
+        .storage
+        .get_credentials_version(account_id)
+        .await?
+        .unwrap_or(0);
     let auth_token = state
         .jwt
-        .create_auth_token(&account_id.to_string())
+        .create_auth_token(&account_id.to_string(), credentials_version)
         .map_err(|_| ApiError::internal())?;
 
     Ok(Json(AuthResponse {
@@ -356,7 +362,7 @@ pub async fn handle_validate(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<ValidateResponse>, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
     let account = state.storage.get_account_by_id(auth_ctx.account_id).await?;
 
     let handle = betterbase_accounts_core::identity::format_handle(
@@ -376,14 +382,14 @@ pub async fn handle_delete_account(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
     state.storage.delete_account(auth_ctx.account_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-pub fn extract_auth(state: &AppState, headers: &HeaderMap) -> Result<AuthContext, ApiError> {
+pub async fn extract_auth(state: &AppState, headers: &HeaderMap) -> Result<AuthContext, ApiError> {
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -397,6 +403,23 @@ pub fn extract_auth(state: &AppState, headers: &HeaderMap) -> Result<AuthContext
 
     let account_id =
         Uuid::parse_str(&claims.sub).map_err(|_| ApiError::unauthorized("invalid token"))?;
+
+    // AUD-011: a password change or recovery bumps the account's
+    // credentials version; auth JWTs minted before the bump are rejected
+    // so prior sessions cannot outlive the credential rotation. (OAuth
+    // access tokens for resource servers are deliberately not fenced
+    // here — their 15-minute lifetime is the accepted bound, and refresh
+    // families are revoked at rotation time.)
+    let current_version = state
+        .storage
+        .get_credentials_version(account_id)
+        .await?
+        .ok_or_else(|| ApiError::unauthorized("invalid token"))?;
+    if claims.cred_ver != current_version {
+        return Err(ApiError::unauthorized(
+            "credentials changed, re-authenticate",
+        ));
+    }
 
     Ok(AuthContext { account_id })
 }

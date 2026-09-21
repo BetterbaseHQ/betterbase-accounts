@@ -19,7 +19,7 @@ pub async fn handle_list_keys(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<UserKey>>, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
 
     let keys = state.storage.list_user_keys(auth_ctx.account_id).await?;
 
@@ -44,7 +44,7 @@ pub async fn handle_store_key(
     Path((service, key_name)): Path<(String, String)>,
     Json(req): Json<StoreKeyRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
 
     // Validate service
     if !VALID_SERVICES.contains(&service.as_str()) {
@@ -83,7 +83,7 @@ pub async fn handle_get_key(
     headers: HeaderMap,
     Path((service, key_name)): Path<(String, String)>,
 ) -> Result<Json<UserKey>, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
 
     let k = state
         .storage

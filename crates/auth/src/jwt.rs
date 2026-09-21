@@ -59,6 +59,12 @@ pub struct AuthClaims {
     pub typ: String,
     pub exp: i64,
     pub iat: i64,
+    /// Credentials version the token was minted under (AUD-011). A
+    /// password change or recovery bumps the account's version; tokens
+    /// carrying an older version are rejected at validation time. Absent
+    /// on legacy tokens — deserializes as 0, matching the column default.
+    #[serde(default)]
+    pub cred_ver: i64,
 }
 
 /// State token claims — HS256, 60-second lifetime.
@@ -179,13 +185,18 @@ impl JwtService {
 
     // ─── Auth token ──────────────────────────────────────────────────────────
 
-    pub fn create_auth_token(&self, account_id: &str) -> Result<String, JwtError> {
+    pub fn create_auth_token(
+        &self,
+        account_id: &str,
+        credentials_version: i64,
+    ) -> Result<String, JwtError> {
         let now = Utc::now();
         let claims = AuthClaims {
             sub: account_id.to_string(),
             typ: TYP_AUTH.to_string(),
             iat: now.timestamp(),
             exp: (now + Duration::days(14)).timestamp(),
+            cred_ver: credentials_version,
         };
         let mut header = Header::new(Algorithm::HS256);
         header.kid = Some(self.hmac_key_id.to_string());
@@ -407,7 +418,7 @@ mod tests {
     #[test]
     fn auth_token_roundtrip() {
         let svc = test_service();
-        let token = svc.create_auth_token("user-uuid").unwrap();
+        let token = svc.create_auth_token("user-uuid", 0).unwrap();
         let claims = svc.validate_auth_token(&token).unwrap();
         assert_eq!(claims.sub, "user-uuid");
     }
@@ -436,7 +447,7 @@ mod tests {
     fn token_type_confusion_rejected() {
         let svc = test_service();
 
-        let auth_token = svc.create_auth_token("user-uuid").unwrap();
+        let auth_token = svc.create_auth_token("user-uuid", 0).unwrap();
         let state_token = svc.create_state_token("state-uuid").unwrap();
         let verif_token = svc
             .create_verification_token("a@b.com", "registration")

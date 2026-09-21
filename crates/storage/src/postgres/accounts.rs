@@ -34,6 +34,44 @@ impl From<AccountRow> for Account {
 
 #[async_trait]
 impl AccountStorage for PostgresStorage {
+    async fn get_credentials_version(&self, account_id: Uuid) -> Result<Option<i64>, StorageError> {
+        let version = sqlx::query_scalar!(
+            "SELECT credentials_version FROM accounts WHERE id = $1",
+            account_id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(StorageError::from)?;
+        Ok(version.map(i64::from))
+    }
+
+    async fn revoke_account_sessions(&self, account_id: Uuid) -> Result<i64, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+        let new_version = sqlx::query_scalar!(
+            r#"
+            UPDATE accounts
+            SET credentials_version = credentials_version + 1, updated_at = NOW()
+            WHERE id = $1
+            RETURNING credentials_version
+            "#,
+            account_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StorageError::from)?
+        .ok_or(StorageError::AccountNotFound)?
+        .into();
+        sqlx::query!(
+            "DELETE FROM oauth_refresh_tokens WHERE grant_id IN (SELECT id FROM oauth_grants WHERE account_id = $1)",
+            account_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StorageError::from)?;
+        tx.commit().await.map_err(StorageError::from)?;
+        Ok(new_version)
+    }
+
     async fn get_or_create_account(
         &self,
         issuer: &str,

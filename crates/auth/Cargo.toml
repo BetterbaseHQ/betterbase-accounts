@@ -28,3 +28,11 @@ sha2.workspace = true
 sha2_legacy = { package = "sha2", version = "0.10" }
 thiserror.workspace = true
 uuid.workspace = true
+
+[features]
+default = []
+# Exposes in-process OPAQUE client helpers for route-level integration
+# tests in downstream crates (dev-dependency only).
+test-support = []
+
+[dev-dependencies]

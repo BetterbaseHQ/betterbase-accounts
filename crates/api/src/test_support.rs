@@ -23,12 +23,15 @@ pub(crate) struct TestApp {
     pub router: Router,
     pub storage: Arc<PostgresStorage>,
     pub jwt: Arc<JwtService>,
+    pub opaque: Arc<OpaqueService>,
 }
 
 impl TestApp {
     /// Mint a bearer auth token for an account id.
     pub(crate) fn auth_token(&self, account_id: &str) -> String {
-        self.jwt.create_auth_token(account_id).expect("auth token")
+        self.jwt
+            .create_auth_token(account_id, 0)
+            .expect("auth token")
     }
 }
 
@@ -97,7 +100,7 @@ pub(crate) async fn test_app() -> Option<TestApp> {
     let state = AppState {
         storage: storage.clone(),
         jwt: jwt.clone(),
-        opaque,
+        opaque: opaque.clone(),
         cap,
         mailer: Arc::new(DevMailer),
         config,
@@ -108,6 +111,7 @@ pub(crate) async fn test_app() -> Option<TestApp> {
         router: crate::build_router(state),
         storage,
         jwt,
+        opaque,
     })
 }
 

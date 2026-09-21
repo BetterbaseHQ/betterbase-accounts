@@ -39,3 +39,4 @@ uuid.workspace = true
 [dev-dependencies]
 sqlx.workspace = true
 tower.workspace = true
+betterbase-accounts-auth = { path = "../auth", features = ["test-support"] }

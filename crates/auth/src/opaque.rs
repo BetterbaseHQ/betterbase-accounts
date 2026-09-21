@@ -186,6 +186,44 @@ impl OpaqueService {
     }
 }
 
+/// In-process OPAQUE client registration for integration tests
+/// (`test-support` feature): runs a full client round against this
+/// service and returns the registration upload bytes that the API's
+/// finalize endpoints expect in `opaque_record`.
+#[cfg(feature = "test-support")]
+pub fn test_registration_upload(
+    service: &OpaqueService,
+    password: &[u8],
+    credential_id: &[u8],
+) -> Result<Vec<u8>, OpaqueError> {
+    use opaque_ke::{ClientRegistration, ClientRegistrationFinishParameters, RegistrationResponse};
+    let mut rng = OsRng;
+
+    let client_start = ClientRegistration::<DefaultCipherSuite>::start(&mut rng, password)
+        .map_err(|_| OpaqueError::InvalidKE1)?;
+    let ke1_bytes = client_start.message.serialize().to_vec();
+    let server_start = service.registration_start(&ke1_bytes, credential_id)?;
+    let server_response =
+        RegistrationResponse::<DefaultCipherSuite>::deserialize(&server_start.response)
+            .map_err(|_| OpaqueError::InvalidRequest)?;
+    let client_finish = client_start
+        .state
+        .finish(
+            &mut rng,
+            password,
+            server_response,
+            ClientRegistrationFinishParameters {
+                identifiers: Identifiers {
+                    server: Some(SERVER_ID),
+                    client: None,
+                },
+                ksf: None,
+            },
+        )
+        .map_err(|_| OpaqueError::InvalidKE3)?;
+    Ok(client_finish.message.serialize().to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

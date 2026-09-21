@@ -103,6 +103,17 @@ impl OAuthRefreshTokenStorage for PostgresStorage {
         Ok(grant_id)
     }
 
+    async fn delete_refresh_tokens_by_account(&self, account_id: Uuid) -> Result<(), StorageError> {
+        sqlx::query!(
+            "DELETE FROM oauth_refresh_tokens WHERE grant_id IN (SELECT id FROM oauth_grants WHERE account_id = $1)",
+            account_id,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(StorageError::from)?;
+        Ok(())
+    }
+
     async fn rotate_refresh_token(
         &self,
         old_token_id: Uuid,

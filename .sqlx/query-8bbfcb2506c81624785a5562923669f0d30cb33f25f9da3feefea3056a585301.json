@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE accounts\n            SET credentials_version = credentials_version + 1, updated_at = NOW()\n            WHERE id = $1\n            RETURNING credentials_version\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "credentials_version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8bbfcb2506c81624785a5562923669f0d30cb33f25f9da3feefea3056a585301"
+}

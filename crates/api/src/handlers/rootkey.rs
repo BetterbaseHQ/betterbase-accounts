@@ -21,7 +21,7 @@ pub async fn handle_get_root_key(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<GetRootKeyResponse>, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
 
     let key = state
         .storage
@@ -39,7 +39,7 @@ pub async fn handle_set_root_key(
     headers: HeaderMap,
     Json(req): Json<SetRootKeyRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
 
     let key = B64
         .decode(&req.wrapped_root_key)
@@ -61,7 +61,7 @@ pub async fn handle_get_grant_wrapped_keys(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<GetGrantWrappedKeysResponse>, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
 
     let grants = state
         .storage
@@ -88,7 +88,7 @@ pub async fn handle_update_grant_wrapped_keys(
     headers: HeaderMap,
     Json(req): Json<UpdateGrantWrappedKeysRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
 
     let mut updates = Vec::with_capacity(req.grants.len());
     for update in &req.grants {
@@ -128,7 +128,7 @@ pub async fn handle_rotate_root_key(
     headers: HeaderMap,
     Json(req): Json<RotateRootKeyRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let auth_ctx = extract_auth(&state, &headers)?;
+    let auth_ctx = extract_auth(&state, &headers).await?;
 
     let new_root_key = B64
         .decode(&req.wrapped_root_key)

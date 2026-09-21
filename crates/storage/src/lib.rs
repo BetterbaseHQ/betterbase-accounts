@@ -211,6 +211,12 @@ pub struct GrantKeyUpdate {
 
 #[async_trait]
 pub trait AccountStorage: Send + Sync {
+    /// Current credentials version for session fencing (AUD-011).
+    async fn get_credentials_version(&self, account_id: Uuid) -> Result<Option<i64>, StorageError>;
+    /// Revoke an account's sessions atomically: bump the credentials
+    /// version (fencing pre-rotation auth JWTs) and delete all refresh
+    /// token families. Returns the new version for minting fresh tokens.
+    async fn revoke_account_sessions(&self, account_id: Uuid) -> Result<i64, StorageError>;
     async fn get_or_create_account(
         &self,
         issuer: &str,
@@ -388,6 +394,8 @@ pub trait OAuthRefreshTokenStorage: Send + Sync {
         &self,
         hash: &[u8],
     ) -> Result<Option<Uuid>, StorageError>;
+    /// Delete every refresh token across all of an account's grants.
+    async fn delete_refresh_tokens_by_account(&self, account_id: Uuid) -> Result<(), StorageError>;
     /// Atomically: delete old token, record it as used, create new token.
     async fn rotate_refresh_token(
         &self,
