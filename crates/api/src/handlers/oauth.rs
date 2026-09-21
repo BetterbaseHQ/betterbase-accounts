@@ -1867,10 +1867,11 @@ mod refresh_tests {
 
         // AUD-004 sequential reuse: the already-rotated token is presented
         // again (a copied token used by its thief, or a stale tab). The
-        // surviving replacement must be revoked, not left active.
+        // surviving replacement must be revoked, not left active. 400 per
+        // RFC 6749; the description carries the reuse signal.
         let (status, body) =
             post_form(&app, "/oauth/token", None, &refresh_form(&client_id, &raw1)).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
         assert_eq!(body["error"], "invalid_grant");
         assert!(
             body["error_description"]
