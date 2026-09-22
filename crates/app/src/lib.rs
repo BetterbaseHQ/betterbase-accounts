@@ -54,7 +54,7 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_env() -> Result<Self> {
-        Ok(AppConfig {
+        let config = AppConfig {
             database_url: require_env("DATABASE_URL")?,
             opaque_server_setup: require_env("OPAQUE_SERVER_SETUP")?,
             oauth_issuer: require_env("OAUTH_ISSUER")?,
@@ -87,7 +87,27 @@ impl AppConfig {
             smtp_password: std::env::var("SMTP_PASSWORD").unwrap_or_default(),
             smtp_from: std::env::var("SMTP_FROM")
                 .unwrap_or_else(|_| "noreply@betterbase.dev".to_string()),
-        })
+        };
+
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Fail fast on configurations that would otherwise break at runtime.
+    ///
+    /// An empty SMTP host in SMTP mode is exactly such a case: the mailer
+    /// constructs fine and every outgoing email (verification, recovery)
+    /// fails at send time with no startup signal (AUD-056).
+    fn validate(&self) -> Result<()> {
+        if !self.smtp_dev_mode && self.smtp_host.trim().is_empty() {
+            anyhow::bail!(
+                "SMTP_HOST is required when SMTP_DEV_MODE is not true: email delivery is \
+                 enabled (production default) but no mail server is configured. Set \
+                 SMTP_HOST (and credentials), or set SMTP_DEV_MODE=true for local \
+                 development (emails are logged instead of sent)."
+            );
+        }
+        Ok(())
     }
 }
 
@@ -287,4 +307,58 @@ fn extract_domain(issuer: &str) -> &str {
 
 fn require_env(key: &str) -> Result<String> {
     std::env::var(key).with_context(|| format!("missing required environment variable: {key}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> AppConfig {
+        AppConfig {
+            database_url: "postgres://test".to_string(),
+            opaque_server_setup: "00".to_string(),
+            oauth_issuer: "https://accounts.test".to_string(),
+            identity_hash_key: "aa".repeat(32),
+            listen_addr: "127.0.0.1:5377".to_string(),
+            sync_endpoint: None,
+            federation_ws_endpoint: None,
+            web_base_url: String::new(),
+            log_format: "text".to_string(),
+            cap_enabled: false,
+            cap_key_id: String::new(),
+            cap_secret: String::new(),
+            cap_verify_url: "http://cap:3000".to_string(),
+            smtp_dev_mode: true,
+            smtp_host: String::new(),
+            smtp_port: 587,
+            smtp_username: String::new(),
+            smtp_password: String::new(),
+            smtp_from: "noreply@test".to_string(),
+        }
+    }
+
+    #[test]
+    fn smtp_mode_requires_host() {
+        let mut config = test_config();
+        config.smtp_dev_mode = false;
+        config.smtp_host = String::new();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("SMTP_HOST"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn smtp_mode_accepts_host() {
+        let mut config = test_config();
+        config.smtp_dev_mode = false;
+        config.smtp_host = "smtp.example.com".to_string();
+        config.validate().expect("host set in SMTP mode is valid");
+    }
+
+    #[test]
+    fn dev_mailer_mode_allows_empty_host() {
+        let mut config = test_config();
+        config.smtp_dev_mode = true;
+        config.smtp_host = String::new();
+        config.validate().expect("dev mailer needs no host");
+    }
 }
