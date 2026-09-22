@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE accounts\n            SET opaque_record = $2,\n                wrapped_root_key = COALESCE($3, wrapped_root_key),\n                credentials_version = credentials_version + 1,\n                root_key_version = root_key_version + CASE WHEN $3::bytea IS NULL THEN 0 ELSE 1 END,\n                updated_at = NOW()\n            WHERE id = $1\n            RETURNING credentials_version\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "credentials_version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e32919a3c15116c2cd96ed416ebdb6633f719d4c609467e02de5c71ab9122b0c"
+}

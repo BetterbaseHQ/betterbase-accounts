@@ -6,7 +6,10 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use betterbase_accounts_auth::{jwt::JwtError, opaque::OpaqueError};
+use betterbase_accounts_auth::{
+    jwt::{JwtError, StatePurpose},
+    opaque::OpaqueError,
+};
 use betterbase_accounts_core::email::validate_email;
 use betterbase_accounts_core::protocol::*;
 use betterbase_accounts_storage::{
@@ -80,15 +83,18 @@ pub async fn handle_get_recovery_blob(
     // discloses nothing beyond what the token already authorizes.
 
     // Fetch blob by email — uniform 404 on all failures
-    let blob_bytes = state
+    let (blob_bytes, root_key_version) = state
         .storage
-        .get_recovery_blob_by_email(&state.config.issuer, &claims.email)
+        .get_recovery_blob_with_root_version_by_email(&state.config.issuer, &claims.email)
         .await
         .map_err(|_| ApiError::not_found("not found"))?;
 
     let blob = String::from_utf8(blob_bytes).map_err(|_| ApiError::not_found("not found"))?;
 
-    Ok(Json(GetRecoveryBlobResponse { blob }))
+    Ok(Json(GetRecoveryBlobResponse {
+        blob,
+        root_key_version,
+    }))
 }
 
 /// POST /v1/accounts/recover/init
@@ -129,6 +135,19 @@ pub async fn handle_recover_init(
         ));
     }
 
+    // Reject a blob decrypted before another session rotated the root, before
+    // consuming the email proof so the user can fetch the current blob and retry.
+    let account = state
+        .storage
+        .get_account_by_email(&state.config.issuer, &canonical_email)
+        .await?;
+    if req
+        .expected_root_version
+        .is_some_and(|version| version != account.root_key_version)
+    {
+        return Err(StorageError::RootKeyVersionConflict.into());
+    }
+
     let jti_exp =
         chrono::DateTime::from_timestamp(v_claims.exp, 0).unwrap_or_else(chrono::Utc::now);
     state
@@ -153,12 +172,6 @@ pub async fn handle_recover_init(
         )
         .await?;
 
-    // Look up account
-    let account = state
-        .storage
-        .get_account_by_email(&state.config.issuer, &canonical_email)
-        .await?;
-
     // Decode OPAQUE request
     let opaque_bytes = B64
         .decode(&req.opaque_request)
@@ -179,6 +192,7 @@ pub async fn handle_recover_init(
     let state_id = Uuid::new_v4();
     let now = chrono::Utc::now();
     let reg_state = RegistrationState {
+        root_key_version: account.root_key_version,
         id: state_id,
         account_id: account.id,
         username: account.username.clone(),
@@ -189,7 +203,11 @@ pub async fn handle_recover_init(
 
     let state_token = state
         .jwt
-        .create_state_token(&state_id.to_string())
+        .create_state_token(
+            &state_id.to_string(),
+            StatePurpose::Recovery,
+            account.credentials_version,
+        )
         .map_err(|_| ApiError::internal())?;
 
     Ok(Json(RecoverInitResponse {
@@ -204,13 +222,12 @@ pub async fn handle_recover_finalize(
     State(state): State<AppState>,
     Json(req): Json<RecoverFinalizeRequest>,
 ) -> Result<Json<AuthResponse>, ApiError> {
-    let mut new_credentials_version: Option<i64> = None;
-    let state_id_str = state
+    let state_claims = state
         .jwt
-        .validate_state_token(&req.state_token)
+        .validate_state_token(&req.state_token, StatePurpose::Recovery)
         .map_err(ApiError::from)?;
-    let state_id =
-        Uuid::parse_str(&state_id_str).map_err(|_| ApiError::bad_request("invalid state token"))?;
+    let state_id = Uuid::parse_str(&state_claims.sub)
+        .map_err(|_| ApiError::bad_request("invalid state token"))?;
 
     // Atomically consume registration state (prevents replay)
     let reg_state = state.storage.consume_registration_state(state_id).await?;
@@ -231,56 +248,35 @@ pub async fn handle_recover_finalize(
                 }
             })?;
 
-    // Optional new wrapped root key. The credentials update and session
-    // revocation commit atomically (AUD-011).
-    if !req.wrapped_root_key.is_empty() {
-        let new_key = B64
+    let new_key = if req.wrapped_root_key.is_empty() {
+        None
+    } else {
+        let key = B64
             .decode(&req.wrapped_root_key)
             .map_err(|_| ApiError::bad_request("invalid wrapped_root_key encoding"))?;
-        if new_key.len() != 41 {
+        if key.len() != 41 {
             return Err(ApiError::bad_request("wrapped_root_key must be 41 bytes"));
         }
-        new_credentials_version = Some(
-            state
-                .storage
-                .update_credentials_and_revoke_sessions(
-                    reg_state.account_id,
-                    &opaque_record_final,
-                    &new_key,
-                )
-                .await?,
-        );
-    } else {
-        state
-            .storage
-            .update_registration(reg_state.account_id, &opaque_record_final)
-            .await?;
-    }
-
-    // Optional new recovery blob. A failed store propagates (review of
-    // AUD-016): silently keeping the previous blob would present a false
-    // recovery path that decrypts to the retired root.
-    if !req.new_blob.is_empty() {
-        state
-            .storage
-            .store_recovery_blob(reg_state.account_id, req.new_blob.as_bytes())
-            .await?;
-    }
-
-    // AUD-011: recovery re-credentials the account — revoke prior
-    // sessions (refresh families deleted, pre-rotation auth JWTs fenced)
-    // and mint the completion token under the new version. When the
-    // finalize carried a new wrapped root, the atomic credentials update
-    // already revoked; otherwise revoke standalone.
-    let new_version = match new_credentials_version {
-        Some(v) => v,
-        None => {
-            state
-                .storage
-                .revoke_account_sessions(reg_state.account_id)
-                .await?
-        }
+        Some(key)
     };
+
+    // All recovery writes and session revocation commit together, including
+    // legacy requests that leave the wrapped root key unchanged.
+    let new_version = state
+        .storage
+        .update_credentials_and_revoke_sessions(
+            reg_state.account_id,
+            &opaque_record_final,
+            new_key.as_deref(),
+            state_claims.cred_ver,
+            reg_state.root_key_version,
+            if req.new_blob.is_empty() {
+                None
+            } else {
+                Some(req.new_blob.as_bytes())
+            },
+        )
+        .await?;
     let auth_token = state
         .jwt
         .create_auth_token(&reg_state.account_id.to_string(), new_version)
@@ -555,6 +551,7 @@ mod session_revocation_tests {
         let now2 = chrono::Utc::now();
         app.storage
             .create_registration_state(&RegistrationState {
+                root_key_version: account.root_key_version,
                 id: state_id,
                 account_id: account.id,
                 username: account.username.clone(),
@@ -565,7 +562,11 @@ mod session_revocation_tests {
             .expect("create state");
         let state_token = app
             .jwt
-            .create_state_token(&state_id.to_string())
+            .create_state_token(
+                &state_id.to_string(),
+                StatePurpose::Recovery,
+                account.credentials_version,
+            )
             .expect("state token");
         let upload = test_registration_upload(&app.opaque, b"new-password", account.id.as_bytes())
             .expect("registration upload");

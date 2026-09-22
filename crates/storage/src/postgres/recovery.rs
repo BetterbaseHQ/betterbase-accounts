@@ -28,9 +28,19 @@ impl RecoveryStorage for PostgresStorage {
         issuer: &str,
         email: &str,
     ) -> Result<Vec<u8>, StorageError> {
+        self.get_recovery_blob_with_root_version_by_email(issuer, email)
+            .await
+            .map(|(blob, _)| blob)
+    }
+
+    async fn get_recovery_blob_with_root_version_by_email(
+        &self,
+        issuer: &str,
+        email: &str,
+    ) -> Result<(Vec<u8>, i64), StorageError> {
         let row = sqlx::query!(
             r#"
-            SELECT rb.blob
+            SELECT rb.blob, a.root_key_version
             FROM recovery_blobs rb
             JOIN accounts a ON a.id = rb.account_id
             WHERE a.issuer = $1 AND a.email = $2
@@ -43,7 +53,7 @@ impl RecoveryStorage for PostgresStorage {
         .map_err(StorageError::from)?
         .ok_or(StorageError::RecoveryBlobNotFound)?;
 
-        Ok(row.blob)
+        Ok((row.blob, i64::from(row.root_key_version)))
     }
 
     async fn delete_recovery_blob(&self, account_id: Uuid) -> Result<(), StorageError> {
@@ -61,6 +71,42 @@ impl RecoveryStorage for PostgresStorage {
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
+    use crate::CompositeStorage;
+
+    #[tokio::test]
+    async fn recovery_snapshot_tracks_atomic_root_key_rotation() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let account = create_account(&storage).await;
+        storage
+            .store_recovery_blob(account.id, b"original blob")
+            .await
+            .unwrap();
+        let original = (b"original blob".to_vec(), 0);
+        let replacement = (b"replacement blob".to_vec(), 1);
+        assert_eq!(
+            storage
+                .get_recovery_blob_with_root_version_by_email(TEST_ISSUER, TEST_EMAIL)
+                .await
+                .unwrap(),
+            original
+        );
+        let (read, rotated) = tokio::join!(
+            storage.get_recovery_blob_with_root_version_by_email(TEST_ISSUER, TEST_EMAIL),
+            storage.rotate_root_key(account.id, 0, &[2; 41], &[], b"replacement blob"),
+        );
+        assert_eq!(rotated.unwrap(), 1);
+        let read = read.unwrap();
+        assert!(read == original || read == replacement);
+        assert_eq!(
+            storage
+                .get_recovery_blob_with_root_version_by_email(TEST_ISSUER, TEST_EMAIL)
+                .await
+                .unwrap(),
+            replacement
+        );
+    }
 
     #[tokio::test]
     async fn store_and_fetch_recovery_blob_by_email() {

@@ -9,6 +9,9 @@ pub mod verification;
 #[cfg(test)]
 mod test_support;
 
+#[cfg(test)]
+mod credential_flow_tests;
+
 use axum::{
     http::{header, HeaderValue, Method},
     middleware,

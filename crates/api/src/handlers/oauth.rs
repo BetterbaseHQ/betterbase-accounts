@@ -995,6 +995,13 @@ async fn handle_refresh_token_grant(state: &AppState, req: TokenForm) -> Respons
                 "refresh token reuse detected",
             );
         }
+        Err(StorageError::RefreshTokenNotFound) => {
+            return write_oauth_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "refresh token revoked",
+            );
+        }
         Err(e) => return ApiError::from(e).into_response(),
     }
 

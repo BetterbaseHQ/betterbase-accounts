@@ -21,9 +21,9 @@ interface AuthContextValue extends AuthState {
     authToken: string,
     userId: string,
     email: string,
-    exportKey: Uint8Array,
-    rootKey: Uint8Array,
-    rootKeyVersion: number,
+    exportKey: Uint8Array | null,
+    rootKey: Uint8Array | null,
+    rootKeyVersion: number | null,
   ) => void;
   /// Version of the account root key held in memory; consent submissions
   /// carry it so the server can reject material derived under a retired
@@ -64,20 +64,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Keep refs for secure clearing
   const exportKeyRef = useRef<Uint8Array | null>(null);
   const rootKeyRef = useRef<Uint8Array | null>(null);
-  const rootKeyVersionRef = useRef<number | null>(null);
 
   const setAuth = useCallback(
     (
       token: string,
       id: string,
       userEmail: string,
-      key: Uint8Array,
-      root: Uint8Array,
-      version: number,
+      key: Uint8Array | null,
+      root: Uint8Array | null,
+      version: number | null,
     ) => {
       // Clear any existing keys before setting new ones
-      secureClear(exportKeyRef.current);
-      secureClear(rootKeyRef.current);
+      if (exportKeyRef.current !== key) secureClear(exportKeyRef.current);
+      if (rootKeyRef.current !== root) secureClear(rootKeyRef.current);
 
       setAuthToken(token);
       setUserId(id);
@@ -87,7 +86,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setRootKeyVersion(version);
       exportKeyRef.current = key;
       rootKeyRef.current = root;
-      rootKeyVersionRef.current = version;
 
       // Persist token, userId, and email to localStorage
       localStorage.setItem("auth_token", token);
@@ -104,7 +102,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     secureClear(rootKeyRef.current);
     exportKeyRef.current = null;
     rootKeyRef.current = null;
-    rootKeyVersionRef.current = null;
 
     setAuthToken(null);
     setUserId(null);
@@ -123,7 +120,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     secureClear(rootKeyRef.current);
     exportKeyRef.current = null;
     rootKeyRef.current = null;
-    rootKeyVersionRef.current = null;
     setExportKey(null);
     setRootKey(null);
     setRootKeyVersion(null);
@@ -143,7 +139,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasExportKey: exportKey !== null,
       hasRootKey: rootKey !== null,
     }),
-    [authToken, userId, email, exportKey, rootKey, setAuth, clearAuth, clearExportKey],
+    [
+      authToken,
+      userId,
+      email,
+      exportKey,
+      rootKey,
+      rootKeyVersion,
+      setAuth,
+      clearAuth,
+      clearExportKey,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

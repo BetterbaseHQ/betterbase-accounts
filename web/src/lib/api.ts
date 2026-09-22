@@ -217,7 +217,7 @@ export const api = {
   storeRecoveryBlob: (blob: string) => postAuth<void>("/v1/accounts/recovery-blob", { blob }),
 
   getRecoveryBlob: (email: string, verificationToken: string) =>
-    postWithToken<{ blob: string }>(
+    postWithToken<{ blob: string; root_key_version: number }>(
       "/v1/accounts/recovery-blob/fetch",
       {
         email,
@@ -230,6 +230,7 @@ export const api = {
     opaqueRequest: string,
     verificationToken: string,
     capToken?: string,
+    expectedRootVersion?: number,
   ) =>
     post<{ opaque_response: string; state_token: string; user_id: string }>(
       "/v1/accounts/recover/init",
@@ -238,6 +239,7 @@ export const api = {
         opaque_request: opaqueRequest,
         verification_token: verificationToken,
         cap_token: capToken || "",
+        expected_root_version: expectedRootVersion,
       },
     ),
 

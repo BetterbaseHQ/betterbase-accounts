@@ -7,6 +7,8 @@ use crate::{Account, AccountStorage, RootKeyStorage, StorageError};
 use super::PostgresStorage;
 
 struct AccountRow {
+    root_key_version: i32,
+    credentials_version: i32,
     id: Uuid,
     issuer: String,
     username: String,
@@ -20,6 +22,8 @@ struct AccountRow {
 impl From<AccountRow> for Account {
     fn from(r: AccountRow) -> Self {
         Account {
+            root_key_version: i64::from(r.root_key_version),
+            credentials_version: i64::from(r.credentials_version),
             id: r.id,
             issuer: r.issuer,
             username: r.username,
@@ -91,7 +95,7 @@ impl AccountStorage for PostgresStorage {
             VALUES ($1, $2, $3)
             ON CONFLICT (issuer, username) DO UPDATE SET issuer = EXCLUDED.issuer
             RETURNING id, issuer, username, email,
-                      opaque_record, wrapped_root_key,
+                      opaque_record, wrapped_root_key, credentials_version, root_key_version,
                       created_at, updated_at
             "#,
             issuer,
@@ -118,7 +122,7 @@ impl AccountStorage for PostgresStorage {
             AccountRow,
             r#"
             SELECT id, issuer, username, email,
-                   opaque_record, wrapped_root_key,
+                   opaque_record, wrapped_root_key, credentials_version, root_key_version,
                    created_at, updated_at
             FROM accounts WHERE id = $1
             "#,
@@ -141,7 +145,7 @@ impl AccountStorage for PostgresStorage {
             AccountRow,
             r#"
             SELECT id, issuer, username, email,
-                   opaque_record, wrapped_root_key,
+                   opaque_record, wrapped_root_key, credentials_version, root_key_version,
                    created_at, updated_at
             FROM accounts WHERE issuer = $1 AND username = $2
             "#,
@@ -165,7 +169,7 @@ impl AccountStorage for PostgresStorage {
             AccountRow,
             r#"
             SELECT id, issuer, username, email,
-                   opaque_record, wrapped_root_key,
+                   opaque_record, wrapped_root_key, credentials_version, root_key_version,
                    created_at, updated_at
             FROM accounts WHERE issuer = $1 AND email = $2
             "#,

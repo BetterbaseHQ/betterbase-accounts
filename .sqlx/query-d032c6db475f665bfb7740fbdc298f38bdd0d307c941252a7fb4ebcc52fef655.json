@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT credentials_version, root_key_version FROM accounts WHERE id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "credentials_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "root_key_version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d032c6db475f665bfb7740fbdc298f38bdd0d307c941252a7fb4ebcc52fef655"
+}

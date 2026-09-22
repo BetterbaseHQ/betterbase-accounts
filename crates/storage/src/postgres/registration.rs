@@ -7,6 +7,7 @@ use crate::{RegistrationState, RegistrationStateStorage, StorageError};
 use super::PostgresStorage;
 
 struct RegistrationStateRow {
+    root_key_version: i64,
     id: Uuid,
     account_id: Uuid,
     username: String,
@@ -17,6 +18,7 @@ struct RegistrationStateRow {
 impl From<RegistrationStateRow> for RegistrationState {
     fn from(r: RegistrationStateRow) -> Self {
         RegistrationState {
+            root_key_version: r.root_key_version,
             id: r.id,
             account_id: r.account_id,
             username: r.username,
@@ -34,14 +36,15 @@ impl RegistrationStateStorage for PostgresStorage {
     ) -> Result<(), StorageError> {
         sqlx::query!(
             r#"
-            INSERT INTO registration_states (id, account_id, username, created_at, expires_at)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO registration_states (id, account_id, username, created_at, expires_at, root_key_version)
+            VALUES ($1, $2, $3, $4, $5, $6)
             "#,
             state.id,
             state.account_id,
             state.username,
             state.created_at,
             state.expires_at,
+            state.root_key_version,
         )
         .execute(&self.pool)
         .await
@@ -54,7 +57,7 @@ impl RegistrationStateStorage for PostgresStorage {
         let row = sqlx::query_as!(
             RegistrationStateRow,
             r#"
-            SELECT id, account_id, username, created_at, expires_at
+            SELECT id, account_id, username, created_at, expires_at, root_key_version
             FROM registration_states
             WHERE id = $1
             "#,
@@ -83,7 +86,7 @@ impl RegistrationStateStorage for PostgresStorage {
             r#"
             DELETE FROM registration_states
             WHERE id = $1
-            RETURNING id, account_id, username, created_at, expires_at
+            RETURNING id, account_id, username, created_at, expires_at, root_key_version
             "#,
             id,
         )
@@ -111,6 +114,7 @@ mod tests {
     async fn create_state(storage: &PostgresStorage, expires_in: Duration) -> RegistrationState {
         let account = create_account(storage).await;
         let state = RegistrationState {
+            root_key_version: account.root_key_version,
             id: Uuid::new_v4(),
             account_id: account.id,
             username: account.username,

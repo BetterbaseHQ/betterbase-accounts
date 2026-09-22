@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, account_id, username, created_at, expires_at\n            FROM registration_states\n            WHERE id = $1\n            ",
+  "query": "\n            SELECT id, account_id, username, state, created_at, expires_at, credentials_version, root_key_version\n            FROM login_states\n            WHERE id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -20,13 +20,28 @@
       },
       {
         "ordinal": 3,
+        "name": "state",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "expires_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "credentials_version",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "root_key_version",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -36,11 +51,14 @@
     },
     "nullable": [
       false,
+      true,
+      false,
+      false,
       false,
       false,
       false,
       false
     ]
   },
-  "hash": "2a22c8e7f701f674349b2c1255a19aef2b7f41f42344d3aa9fdb476698c74806"
+  "hash": "93331f1c6c198fbe2969a0ef47cb9052b28299f543a2568d52229214563c0532"
 }

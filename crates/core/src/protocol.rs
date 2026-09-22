@@ -150,11 +150,15 @@ pub struct StoreRecoveryBlobRequest {
 
 #[derive(Debug, Serialize)]
 pub struct GetRecoveryBlobResponse {
+    pub root_key_version: i64,
     pub blob: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RecoverInitRequest {
+    /// Root snapshot returned with the decrypted recovery blob. Optional for legacy clients.
+    #[serde(default)]
+    pub expected_root_version: Option<i64>,
     pub email: String,
     pub opaque_request: String,
     #[serde(default)]

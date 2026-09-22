@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            DELETE FROM registration_states\n            WHERE id = $1\n            RETURNING id, account_id, username, created_at, expires_at\n            ",
+  "query": "\n            DELETE FROM login_states\n            WHERE id = $1\n            RETURNING id, account_id, username, state, created_at, expires_at, credentials_version, root_key_version\n            ",
   "describe": {
     "columns": [
       {
@@ -20,13 +20,28 @@
       },
       {
         "ordinal": 3,
+        "name": "state",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "expires_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "credentials_version",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 7,
+        "name": "root_key_version",
+        "type_info": "Int8"
       }
     ],
     "parameters": {
@@ -36,11 +51,14 @@
     },
     "nullable": [
       false,
+      true,
+      false,
+      false,
       false,
       false,
       false,
       false
     ]
   },
-  "hash": "c8e1c66e9fc44e5a687d227b401f756d851b3fd190c00411a5e30adc3ae4a9cf"
+  "hash": "8743ae12425f9a13f659c8101bc08aa7d252950c4cb493e79684dcc722cae87a"
 }

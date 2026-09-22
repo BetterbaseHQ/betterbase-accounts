@@ -7,6 +7,8 @@ use crate::{LoginState, LoginStateStorage, StorageError};
 use super::PostgresStorage;
 
 struct LoginStateRow {
+    root_key_version: i64,
+    credentials_version: i64,
     id: Uuid,
     account_id: Option<Uuid>,
     username: String,
@@ -18,6 +20,8 @@ struct LoginStateRow {
 impl From<LoginStateRow> for LoginState {
     fn from(r: LoginStateRow) -> Self {
         LoginState {
+            root_key_version: r.root_key_version,
+            credentials_version: r.credentials_version,
             id: r.id,
             account_id: r.account_id,
             username: r.username,
@@ -33,8 +37,8 @@ impl LoginStateStorage for PostgresStorage {
     async fn create_login_state(&self, state: &LoginState) -> Result<(), StorageError> {
         sqlx::query!(
             r#"
-            INSERT INTO login_states (id, account_id, username, state, created_at, expires_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO login_states (id, account_id, username, state, created_at, expires_at, credentials_version, root_key_version)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             "#,
             state.id,
             state.account_id,
@@ -42,6 +46,8 @@ impl LoginStateStorage for PostgresStorage {
             state.state.as_slice(),
             state.created_at,
             state.expires_at,
+            state.credentials_version,
+            state.root_key_version,
         )
         .execute(&self.pool)
         .await
@@ -54,7 +60,7 @@ impl LoginStateStorage for PostgresStorage {
         let row = sqlx::query_as!(
             LoginStateRow,
             r#"
-            SELECT id, account_id, username, state, created_at, expires_at
+            SELECT id, account_id, username, state, created_at, expires_at, credentials_version, root_key_version
             FROM login_states
             WHERE id = $1
             "#,
@@ -80,7 +86,7 @@ impl LoginStateStorage for PostgresStorage {
             r#"
             DELETE FROM login_states
             WHERE id = $1
-            RETURNING id, account_id, username, state, created_at, expires_at
+            RETURNING id, account_id, username, state, created_at, expires_at, credentials_version, root_key_version
             "#,
             id,
         )

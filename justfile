@@ -59,9 +59,7 @@ db-start:
     set -e
     if docker ps --format '{{{{.Names}}' | grep -q '^{{_db_container}}$'; then
         echo "Test database already running"
-        exit 0
-    fi
-    if docker ps -a --format '{{{{.Names}}' | grep -q '^{{_db_container}}$'; then
+    elif docker ps -a --format '{{{{.Names}}' | grep -q '^{{_db_container}}$'; then
         echo "Starting stopped test database..."
         docker start {{_db_container}}
     else
@@ -75,7 +73,8 @@ db-start:
             postgres:17-alpine
     fi
     echo "Waiting for PostgreSQL to accept connections..."
-    until docker exec {{_db_container}} pg_isready -U {{_db_user}} -d {{_db_name}} > /dev/null 2>&1; do
+    # The initialization server only opens a Unix socket; wait for the final TCP server.
+    until docker exec {{_db_container}} pg_isready -h 127.0.0.1 -U {{_db_user}} -d {{_db_name}} > /dev/null 2>&1; do
         sleep 0.2
     done
     echo "Test database ready on port {{_db_port}}"

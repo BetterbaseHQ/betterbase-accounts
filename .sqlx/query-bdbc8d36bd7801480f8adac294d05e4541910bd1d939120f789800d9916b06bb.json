@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT a.id FROM accounts a\n        JOIN oauth_grants g ON g.account_id = a.id\n        WHERE g.id = $1\n        FOR UPDATE OF a\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "bdbc8d36bd7801480f8adac294d05e4541910bd1d939120f789800d9916b06bb"
+}

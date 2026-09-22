@@ -7,7 +7,12 @@ import { AuthForm } from "@/components/auth-form";
 import { useAuth } from "@/contexts/auth-context";
 import { api } from "@/lib/api";
 import { deriveRecoveryKey, decryptRootKey, RecoveryBlob } from "@/lib/recovery";
-import { base64UrlDecode, deriveRootKeyWrappingKey, wrapRootKey } from "@/lib/crypto";
+import {
+  base64UrlDecode,
+  deriveRootKeyWrappingKey,
+  unwrapRootKey,
+  wrapRootKey,
+} from "@/lib/crypto";
 import { startRegistration, finishRegistration } from "@/lib/opaque";
 import { solveCAPChallenge } from "@/lib/cap";
 import { Button } from "@/components/ui/button";
@@ -31,6 +36,7 @@ interface RecoveryState {
   email: string;
   verificationToken: string;
   rootKey: Uint8Array; // Decrypted root key from recovery blob
+  rootKeyVersion: number; // Version fetched alongside the recovery blob
 }
 
 export function RecoverPage() {
@@ -124,7 +130,12 @@ export function RecoverPage() {
     }
 
     // Store the decrypted root key for use in the password step
-    setRecoveryState({ email, verificationToken, rootKey });
+    setRecoveryState({
+      email,
+      verificationToken,
+      rootKey,
+      rootKeyVersion: blobResponse.root_key_version,
+    });
     setStep("password");
   };
 
@@ -148,6 +159,7 @@ export function RecoverPage() {
       registrationRequest,
       recoveryState.verificationToken,
       capToken,
+      recoveryState.rootKeyVersion,
     );
 
     // Step 3: Finish OPAQUE registration
@@ -172,12 +184,16 @@ export function RecoverPage() {
 
     // Step 6: Store auth in context with new export key and recovered root key
     const rootKeyInfo = await api.getRootKey(finalResponse.auth_token);
+    const currentWrappedRootKey = Uint8Array.from(atob(rootKeyInfo.wrapped_root_key), (c) =>
+      c.charCodeAt(0),
+    );
+    const currentRootKey = await unwrapRootKey(currentWrappedRootKey, wrappingKey);
     setAuth(
       finalResponse.auth_token,
       finalResponse.user_id,
       recoveryState.email,
       newExportKeyBytes,
-      recoveryState.rootKey,
+      currentRootKey,
       rootKeyInfo.root_key_version,
     );
 

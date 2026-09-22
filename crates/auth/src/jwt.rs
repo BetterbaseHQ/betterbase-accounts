@@ -67,9 +67,25 @@ pub struct AuthClaims {
     pub cred_ver: i64,
 }
 
+/// Authentication flow authorized by a short-lived state token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StatePurpose {
+    Registration,
+    Login,
+    PasswordChangeLogin,
+    PasswordChange,
+    Recovery,
+}
+
 /// State token claims — HS256, 60-second lifetime.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StateClaims {
+    pub purpose: StatePurpose,
+    /// Credential snapshot for registration-stage flows. Login-stage tokens
+    /// keep this at zero; their version is stored with the server-side state
+    /// so unauthenticated callers cannot observe credential changes.
+    pub cred_ver: i64,
     /// UUID of the registration or login state record.
     pub sub: String,
     /// Token type discriminator — prevents cross-type confusion.
@@ -220,9 +236,16 @@ impl JwtService {
 
     // ─── State token ─────────────────────────────────────────────────────────
 
-    pub fn create_state_token(&self, state_id: &str) -> Result<String, JwtError> {
+    pub fn create_state_token(
+        &self,
+        state_id: &str,
+        purpose: StatePurpose,
+        credentials_version: i64,
+    ) -> Result<String, JwtError> {
         let now = Utc::now();
         let claims = StateClaims {
+            purpose,
+            cred_ver: credentials_version,
             sub: state_id.to_string(),
             typ: TYP_STATE.to_string(),
             iat: now.timestamp(),
@@ -234,7 +257,11 @@ impl JwtService {
             .map_err(|e| JwtError::Internal(e.to_string()))
     }
 
-    pub fn validate_state_token(&self, token: &str) -> Result<String, JwtError> {
+    pub fn validate_state_token(
+        &self,
+        token: &str,
+        purpose: StatePurpose,
+    ) -> Result<StateClaims, JwtError> {
         let header = jsonwebtoken::decode_header(token).map_err(|_| JwtError::InvalidToken)?;
         let kid = header.kid.as_deref().and_then(|k| k.parse::<i32>().ok());
         let key = self.hmac_key_for_kid(kid)?;
@@ -242,10 +269,10 @@ impl JwtService {
         validation.validate_exp = true;
         let data: TokenData<StateClaims> =
             decode(token, &DecodingKey::from_secret(&key), &validation)?;
-        if data.claims.typ != TYP_STATE {
+        if data.claims.typ != TYP_STATE || data.claims.purpose != purpose {
             return Err(JwtError::InvalidToken);
         }
-        Ok(data.claims.sub)
+        Ok(data.claims)
     }
 
     // ─── OAuth state token ────────────────────────────────────────────────────
@@ -426,9 +453,57 @@ mod tests {
     #[test]
     fn state_token_roundtrip() {
         let svc = test_service();
-        let token = svc.create_state_token("state-uuid").unwrap();
-        let id = svc.validate_state_token(&token).unwrap();
-        assert_eq!(id, "state-uuid");
+        let token = svc
+            .create_state_token("state-uuid", StatePurpose::Login, 7)
+            .unwrap();
+        let id = svc
+            .validate_state_token(&token, StatePurpose::Login)
+            .unwrap();
+        assert_eq!(id.sub, "state-uuid");
+        assert_eq!(id.cred_ver, 7);
+    }
+
+    #[test]
+    fn state_tokens_are_bound_to_their_flow() {
+        let svc = test_service();
+        let purposes = [
+            StatePurpose::Registration,
+            StatePurpose::Login,
+            StatePurpose::PasswordChangeLogin,
+            StatePurpose::PasswordChange,
+            StatePurpose::Recovery,
+        ];
+        for issued_for in purposes {
+            let token = svc.create_state_token("state", issued_for, 0).unwrap();
+            for accepted_for in purposes {
+                assert_eq!(
+                    svc.validate_state_token(&token, accepted_for).is_ok(),
+                    issued_for == accepted_for,
+                    "{issued_for:?} token used for {accepted_for:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_state_without_flow_binding_is_rejected() {
+        let svc = test_service();
+        let mut header = Header::new(Algorithm::HS256);
+        header.kid = Some("1".to_owned());
+        let token = encode(
+            &header,
+            &serde_json::json!({
+                "sub": "state",
+                "typ": TYP_STATE,
+                "iat": Utc::now().timestamp(),
+                "exp": (Utc::now() + Duration::seconds(60)).timestamp(),
+            }),
+            &EncodingKey::from_secret(&svc.hmac_key),
+        )
+        .unwrap();
+        assert!(svc
+            .validate_state_token(&token, StatePurpose::Recovery)
+            .is_err());
     }
 
     #[test]
@@ -448,7 +523,9 @@ mod tests {
         let svc = test_service();
 
         let auth_token = svc.create_auth_token("user-uuid", 0).unwrap();
-        let state_token = svc.create_state_token("state-uuid").unwrap();
+        let state_token = svc
+            .create_state_token("state-uuid", StatePurpose::Login, 7)
+            .unwrap();
         let verif_token = svc
             .create_verification_token("a@b.com", "registration")
             .unwrap();
@@ -467,7 +544,7 @@ mod tests {
         // Each token type must be rejected by every other validator.
         // auth → others
         assert!(matches!(
-            svc.validate_state_token(&auth_token),
+            svc.validate_state_token(&auth_token, StatePurpose::Login),
             Err(JwtError::InvalidToken)
         ));
         assert!(matches!(
@@ -499,7 +576,7 @@ mod tests {
             Err(JwtError::InvalidToken)
         ));
         assert!(matches!(
-            svc.validate_state_token(&verif_token),
+            svc.validate_state_token(&verif_token, StatePurpose::Login),
             Err(JwtError::InvalidToken)
         ));
         assert!(matches!(
@@ -513,7 +590,7 @@ mod tests {
             Err(JwtError::InvalidToken)
         ));
         assert!(matches!(
-            svc.validate_state_token(&oauth_state_token),
+            svc.validate_state_token(&oauth_state_token, StatePurpose::Login),
             Err(JwtError::InvalidToken)
         ));
         assert!(matches!(

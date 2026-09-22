@@ -15,7 +15,7 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
   test: {
@@ -53,9 +53,9 @@ export default defineConfig({
     rollupOptions: {
       output: {
         // vite 8 bundles with rolldown, which replaces manualChunks with
-        // advancedChunks. Groups match in order — opaque before vendor so the
+        // codeSplitting. Groups match in order — opaque before vendor so the
         // OPAQUE library isn't swallowed by the generic node_modules group.
-        advancedChunks: {
+        codeSplitting: {
           groups: [
             { name: "opaque", test: /@serenity-kit[\\/]opaque/ },
             { name: "vendor", test: /[\\/]node_modules[\\/]/ },

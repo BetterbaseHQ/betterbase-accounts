@@ -8,7 +8,11 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use std::time::Duration;
 
-use betterbase_accounts_auth::{jwt::JwtError, middleware::AuthContext, opaque::OpaqueError};
+use betterbase_accounts_auth::{
+    jwt::{JwtError, StatePurpose},
+    middleware::AuthContext,
+    opaque::OpaqueError,
+};
 use betterbase_accounts_core::{email::validate_email, protocol::*, username::validate_username};
 use betterbase_accounts_storage::{
     AccountStorage, LoginState, LoginStateStorage, RateLimitStorage, RegistrationState,
@@ -119,6 +123,7 @@ pub async fn handle_password_init(
     let state_id = Uuid::new_v4();
     let now = chrono::Utc::now();
     let reg_state = RegistrationState {
+        root_key_version: account.root_key_version,
         id: state_id,
         account_id: account.id,
         username: canonical_username,
@@ -129,7 +134,7 @@ pub async fn handle_password_init(
 
     let state_token = state
         .jwt
-        .create_state_token(&state_id.to_string())
+        .create_state_token(&state_id.to_string(), StatePurpose::Registration, 0)
         .map_err(|_| ApiError::internal())?;
 
     Ok(Json(PasswordInitResponse {
@@ -145,12 +150,12 @@ pub async fn handle_password_finalize(
     Json(req): Json<PasswordFinalizeRequest>,
 ) -> Result<Json<AuthResponse>, ApiError> {
     // Validate state token
-    let state_id_str = state
+    let state_claims = state
         .jwt
-        .validate_state_token(&req.state_token)
+        .validate_state_token(&req.state_token, StatePurpose::Registration)
         .map_err(ApiError::from)?;
-    let state_id =
-        Uuid::parse_str(&state_id_str).map_err(|_| ApiError::bad_request("invalid state token"))?;
+    let state_id = Uuid::parse_str(&state_claims.sub)
+        .map_err(|_| ApiError::bad_request("invalid state token"))?;
 
     // Atomically consume registration state (prevents replay)
     let reg_state = state.storage.consume_registration_state(state_id).await?;
@@ -237,9 +242,9 @@ pub async fn handle_login_init(
         .get_account_by_username(&state.config.issuer, &canonical_username)
         .await;
 
-    let (account_id, opaque_record_bytes): (Option<Uuid>, Option<Vec<u8>>) = match account {
-        Ok(a) => (Some(a.id), a.opaque_record),
-        Err(StorageError::AccountNotFound) => (None, None),
+    let (account_id, opaque_record_bytes, credentials_version) = match account {
+        Ok(a) => (Some(a.id), a.opaque_record, a.credentials_version),
+        Err(StorageError::AccountNotFound) => (None, None, 0),
         Err(e) => return Err(ApiError::from(e)),
     };
 
@@ -269,6 +274,8 @@ pub async fn handle_login_init(
     let state_id = Uuid::new_v4();
     let now = chrono::Utc::now();
     let login_state = LoginState {
+        root_key_version: 0,
+        credentials_version,
         id: state_id,
         account_id,
         username: canonical_username,
@@ -280,7 +287,7 @@ pub async fn handle_login_init(
 
     let login_token = state
         .jwt
-        .create_state_token(&state_id.to_string())
+        .create_state_token(&state_id.to_string(), StatePurpose::Login, 0)
         .map_err(|_| ApiError::internal())?;
 
     Ok(Json(LoginInitResponse {
@@ -295,12 +302,12 @@ pub async fn handle_login_finalize(
     Json(req): Json<LoginFinalizeRequest>,
 ) -> Result<Json<AuthResponse>, ApiError> {
     // Validate login token
-    let state_id_str = state
+    let state_claims = state
         .jwt
-        .validate_state_token(&req.login_token)
+        .validate_state_token(&req.login_token, StatePurpose::Login)
         .map_err(ApiError::from)?;
-    let state_id =
-        Uuid::parse_str(&state_id_str).map_err(|_| ApiError::bad_request("invalid login token"))?;
+    let state_id = Uuid::parse_str(&state_claims.sub)
+        .map_err(|_| ApiError::bad_request("invalid login token"))?;
 
     // Atomically consume login state (prevents replay)
     let login_state = state.storage.consume_login_state(state_id).await?;
@@ -341,11 +348,14 @@ pub async fn handle_login_finalize(
         .clear_login_attempts(&state.config.issuer, &login_state.username)
         .await;
 
-    let credentials_version = state
-        .storage
-        .get_credentials_version(account_id)
-        .await?
-        .unwrap_or(0);
+    // Keep the version that authenticated the OPAQUE exchange. Reading a fresh
+    // version here would let a login with the old password survive a reset.
+    let credentials_version = login_state.credentials_version;
+    if state.storage.get_credentials_version(account_id).await? != Some(credentials_version) {
+        return Err(ApiError::unauthorized(
+            "credentials changed, re-authenticate",
+        ));
+    }
     let auth_token = state
         .jwt
         .create_auth_token(&account_id.to_string(), credentials_version)

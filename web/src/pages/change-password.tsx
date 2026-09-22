@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { Loader2, Lock, Eye, EyeOff, AlertCircle } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
 import { api } from "@/lib/api";
@@ -37,6 +37,7 @@ export function ChangePasswordPage() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [needsReauthentication, setNeedsReauthentication] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
@@ -46,8 +47,7 @@ export function ChangePasswordPage() {
   const [passwordWarning, setPasswordWarning] = useState<string | undefined>();
 
   if (!authToken || !userId) {
-    navigate("/login");
-    return null;
+    return <Navigate to="/login" replace />;
   }
 
   // Check if form is valid enough to submit
@@ -188,17 +188,34 @@ export function ChangePasswordPage() {
         newWrappedB64,
       );
 
+      // The password change has committed and revoked the previous session.
+      // Save its replacement before another request can fail; key material stays
+      // unavailable until we have confirmed the committed root-key version.
+      setAuth(completeResponse.auth_token, completeResponse.user_id, email || "", null, null, null);
+
       // Step 8: Update auth context with new credentials
-      // The root key bytes are unchanged, but refresh the version stamp:
-      // password change rotated the wrapping, and consent submissions must
-      // carry the committed version (AUD-008/009 residual).
-      const rootKeyInfo = await api.getRootKey();
+      // Fetch matching key bytes and version: another session may have rotated
+      // the root key after the password change committed.
+      let rootKeyInfo;
+      let currentRootKey;
+      try {
+        rootKeyInfo = await api.getRootKey(completeResponse.auth_token);
+        const currentWrappedRootKey = Uint8Array.from(atob(rootKeyInfo.wrapped_root_key), (c) =>
+          c.charCodeAt(0),
+        );
+        currentRootKey = await unwrapRootKey(currentWrappedRootKey, newWrappingKey);
+      } catch {
+        newExportKeyBytes.fill(0);
+        rootKey.fill(0);
+        setNeedsReauthentication(true);
+        return;
+      }
       setAuth(
         completeResponse.auth_token,
         completeResponse.user_id,
         email || "",
         newExportKeyBytes,
-        rootKey,
+        currentRootKey,
         rootKeyInfo.root_key_version,
       );
 
@@ -210,6 +227,32 @@ export function ChangePasswordPage() {
       setLoading(false);
     }
   };
+
+  if (needsReauthentication) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-4">
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>Password changed</CardTitle>
+            <CardDescription>
+              Your password was changed successfully. Sign in with your new password to finish
+              setting up recovery.
+            </CardDescription>
+          </CardHeader>
+          <CardFooter>
+            <Button
+              className="w-full"
+              onClick={() =>
+                navigate(`/login?redirect=${encodeURIComponent("/recovery-setup?reset=true")}`)
+              }
+            >
+              Sign in with new password
+            </Button>
+          </CardFooter>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center p-4">

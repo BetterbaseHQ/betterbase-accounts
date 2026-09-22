@@ -236,6 +236,40 @@ pub fn test_registration_upload(
     Ok(client_finish.message.serialize().to_vec())
 }
 
+/// Stateful OPAQUE client for route-level login and password-change tests.
+#[cfg(feature = "test-support")]
+pub struct TestLogin(opaque_ke::ClientLogin<DefaultCipherSuite>);
+
+#[cfg(feature = "test-support")]
+impl TestLogin {
+    pub fn start(password: &[u8]) -> (Self, Vec<u8>) {
+        let started = opaque_ke::ClientLogin::start(&mut OsRng, password).expect("start login");
+        (Self(started.state), started.message.serialize().to_vec())
+    }
+
+    pub fn finish(self, password: &[u8], ke2: &[u8]) -> Vec<u8> {
+        let response = opaque_ke::CredentialResponse::deserialize(ke2).expect("decode KE2");
+        self.0
+            .finish(
+                &mut OsRng,
+                password,
+                response,
+                opaque_ke::ClientLoginFinishParameters {
+                    identifiers: Identifiers {
+                        server: Some(SERVER_ID),
+                        client: None,
+                    },
+                    context: None,
+                    ksf: None,
+                },
+            )
+            .expect("finish login")
+            .message
+            .serialize()
+            .to_vec()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, issuer, username, email,\n                   opaque_record, wrapped_root_key,\n                   created_at, updated_at\n            FROM accounts WHERE id = $1\n            ",
+  "query": "\n            SELECT id, issuer, username, email,\n                   opaque_record, wrapped_root_key, credentials_version, root_key_version,\n                   created_at, updated_at\n            FROM accounts WHERE id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -35,11 +35,21 @@
       },
       {
         "ordinal": 6,
+        "name": "credentials_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "root_key_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 7,
+        "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -57,8 +67,10 @@
       true,
       true,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "b3f4eb04011b44a220f17aec3b11d84e018b5881a20a821bd93299969e287c05"
+  "hash": "be275aba419f250fcf07420da791b682469a535b852858d73a0c0aa91a8ad5e2"
 }

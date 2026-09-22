@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT rb.blob, a.root_key_version\n            FROM recovery_blobs rb\n            JOIN accounts a ON a.id = rb.account_id\n            WHERE a.issuer = $1 AND a.email = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "blob",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "root_key_version",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "00c94c45dd897afd6f094f8f8b61471b83facf4cd954a0e25f34e00e5c57d789"
+}

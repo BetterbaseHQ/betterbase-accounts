@@ -59,6 +59,7 @@ impl IntoResponse for ApiError {
 impl From<StorageError> for ApiError {
     fn from(e: StorageError) -> Self {
         match e {
+            StorageError::CredentialsVersionConflict => ApiError::unauthorized("credentials changed, re-authenticate"),
             StorageError::RootKeyVersionConflict => ApiError::new(
                 axum::http::StatusCode::CONFLICT,
                 "root key changed since this rotation was prepared — re-read and retry",

@@ -187,6 +187,8 @@ impl OAuthGrantStorage for PostgresStorage {
             grant_created_at: DateTime<Utc>,
             grant_updated_at: DateTime<Utc>,
             last_used_at: DateTime<Utc>,
+            root_key_version: i32,
+            credentials_version: i32,
             // Account fields
             acc_id: Uuid,
             issuer: String,
@@ -218,6 +220,8 @@ impl OAuthGrantStorage for PostgresStorage {
                 a.issuer,
                 a.username,
                 a.email,
+                a.root_key_version,
+                a.credentials_version,
                 a.opaque_record,
                 a.wrapped_root_key,
                 a.created_at    AS acc_created_at,
@@ -234,6 +238,8 @@ impl OAuthGrantStorage for PostgresStorage {
         .ok_or(StorageError::AccountNotFound)?;
 
         let account = Account {
+            root_key_version: i64::from(row.root_key_version),
+            credentials_version: i64::from(row.credentials_version),
             id: row.acc_id,
             issuer: row.issuer,
             username: row.username,

@@ -2,7 +2,7 @@
 
 use axum::{extract::State, http::HeaderMap, Json};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use betterbase_accounts_auth::opaque::OpaqueError;
+use betterbase_accounts_auth::{jwt::StatePurpose, opaque::OpaqueError};
 use betterbase_accounts_core::protocol::*;
 use betterbase_accounts_storage::{
     AccountStorage, CompositeStorage, LoginState, LoginStateStorage, RegistrationState,
@@ -47,6 +47,8 @@ pub async fn handle_password_change_init(
     let state_id = Uuid::new_v4();
     let now = chrono::Utc::now();
     let login_state = LoginState {
+        root_key_version: account.root_key_version,
+        credentials_version: account.credentials_version,
         id: state_id,
         account_id: Some(account.id),
         username: account.username,
@@ -58,7 +60,7 @@ pub async fn handle_password_change_init(
 
     let login_token = state
         .jwt
-        .create_state_token(&state_id.to_string())
+        .create_state_token(&state_id.to_string(), StatePurpose::PasswordChangeLogin, 0)
         .map_err(|_| ApiError::internal())?;
 
     Ok(Json(PasswordChangeInitResponse {
@@ -78,12 +80,12 @@ pub async fn handle_password_change_verify(
     let auth_ctx = extract_auth(&state, &headers).await?;
 
     // Validate login token
-    let state_id_str = state
+    let state_claims = state
         .jwt
-        .validate_state_token(&req.login_token)
+        .validate_state_token(&req.login_token, StatePurpose::PasswordChangeLogin)
         .map_err(crate::error::ApiError::from)?;
-    let state_id =
-        Uuid::parse_str(&state_id_str).map_err(|_| ApiError::bad_request("invalid login token"))?;
+    let state_id = Uuid::parse_str(&state_claims.sub)
+        .map_err(|_| ApiError::bad_request("invalid login token"))?;
 
     // Atomically consume login state (prevents replay)
     let login_state = state.storage.consume_login_state(state_id).await?;
@@ -125,6 +127,7 @@ pub async fn handle_password_change_verify(
     let new_state_id = Uuid::new_v4();
     let now = chrono::Utc::now();
     let reg_state = RegistrationState {
+        root_key_version: login_state.root_key_version,
         id: new_state_id,
         account_id: auth_ctx.account_id,
         username: login_state.username,
@@ -135,7 +138,11 @@ pub async fn handle_password_change_verify(
 
     let new_state_token = state
         .jwt
-        .create_state_token(&new_state_id.to_string())
+        .create_state_token(
+            &new_state_id.to_string(),
+            StatePurpose::PasswordChange,
+            login_state.credentials_version,
+        )
         .map_err(|_| ApiError::internal())?;
 
     Ok(Json(PasswordChangeVerifyResponse {
@@ -154,12 +161,12 @@ pub async fn handle_password_change_complete(
 ) -> Result<Json<AuthResponse>, ApiError> {
     let auth_ctx = extract_auth(&state, &headers).await?;
 
-    let state_id_str = state
+    let state_claims = state
         .jwt
-        .validate_state_token(&req.state_token)
+        .validate_state_token(&req.state_token, StatePurpose::PasswordChange)
         .map_err(crate::error::ApiError::from)?;
-    let state_id =
-        Uuid::parse_str(&state_id_str).map_err(|_| ApiError::bad_request("invalid state token"))?;
+    let state_id = Uuid::parse_str(&state_claims.sub)
+        .map_err(|_| ApiError::bad_request("invalid state token"))?;
 
     // Atomically consume registration state (prevents replay)
     let reg_state = state.storage.consume_registration_state(state_id).await?;
@@ -192,23 +199,17 @@ pub async fn handle_password_change_complete(
                 }
             })?;
 
-    // State already consumed atomically above
-    state
-        .storage
-        .update_registration_and_root_key(
-            reg_state.account_id,
-            &opaque_record_final,
-            &wrapped_root_key,
-        )
-        .await?;
-
-    // AUD-011: the password change must revoke prior sessions — refresh
-    // families are deleted and auth JWTs minted before the bump are
-    // fenced at validation. The completion response carries a fresh
-    // token minted under the new version for this device.
+    // Credential replacement and revocation must commit together.
     let new_version = state
         .storage
-        .revoke_account_sessions(reg_state.account_id)
+        .update_credentials_and_revoke_sessions(
+            reg_state.account_id,
+            &opaque_record_final,
+            Some(&wrapped_root_key),
+            state_claims.cred_ver,
+            reg_state.root_key_version,
+            None,
+        )
         .await?;
     let new_auth_token = state
         .jwt

@@ -12,6 +12,8 @@ use uuid::Uuid;
 
 #[derive(Debug, Error)]
 pub enum StorageError {
+    #[error("credentials changed, re-authenticate")]
+    CredentialsVersionConflict,
     #[error("account not found")]
     AccountNotFound,
     #[error("root key version mismatch — rotation was prepared against a stale snapshot")]
@@ -75,6 +77,8 @@ pub enum StorageError {
 
 #[derive(Debug, Clone)]
 pub struct Account {
+    pub root_key_version: i64,
+    pub credentials_version: i64,
     pub id: Uuid,
     pub issuer: String,
     pub username: String,
@@ -89,6 +93,7 @@ pub struct Account {
 
 #[derive(Debug, Clone)]
 pub struct RegistrationState {
+    pub root_key_version: i64,
     pub id: Uuid,
     pub account_id: Uuid,
     pub username: String,
@@ -98,6 +103,9 @@ pub struct RegistrationState {
 
 #[derive(Debug, Clone)]
 pub struct LoginState {
+    pub root_key_version: i64,
+    /// Credential snapshot for this exchange; never exposed by login initialization.
+    pub credentials_version: i64,
     pub id: Uuid,
     /// None for fake-login states (non-existent accounts)
     pub account_id: Option<Uuid>,
@@ -487,6 +495,12 @@ pub trait RecoveryStorage: Send + Sync {
         issuer: &str,
         email: &str,
     ) -> Result<Vec<u8>, StorageError>;
+    /// Read the recovery blob and root-key version from one database snapshot.
+    async fn get_recovery_blob_with_root_version_by_email(
+        &self,
+        issuer: &str,
+        email: &str,
+    ) -> Result<(Vec<u8>, i64), StorageError>;
     async fn delete_recovery_blob(&self, account_id: Uuid) -> Result<(), StorageError>;
 }
 
@@ -578,17 +592,19 @@ pub trait CompositeStorage: Send + Sync {
         opaque_record: &[u8],
         wrapped_root_key: &[u8],
     ) -> Result<(), StorageError>;
-    /// Atomic root key rotation: update root key + batch update grant keys + update recovery blob.
-    /// Update credentials and revoke all prior sessions atomically
-    /// (AUD-011 review: a crash between the two must not leave a rotated
-    /// password with surviving pre-rotation sessions). Returns the new
-    /// credentials version for minting the completion token.
+    /// Replace credentials, optionally re-wrap the root key and replace the
+    /// recovery blob, and revoke prior sessions in one transaction. Rejects
+    /// flows started before a previous credential change. Returns the new version.
     async fn update_credentials_and_revoke_sessions(
         &self,
         account_id: Uuid,
         opaque_record: &[u8],
-        wrapped_root_key: &[u8],
+        wrapped_root_key: Option<&[u8]>,
+        expected_credentials_version: i64,
+        expected_root_key_version: i64,
+        recovery_blob: Option<&[u8]>,
     ) -> Result<i64, StorageError>;
+    /// Atomic root key rotation: update root key + batch update grant keys + update recovery blob.
     async fn rotate_root_key(
         &self,
         account_id: Uuid,

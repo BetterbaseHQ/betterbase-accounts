@@ -277,12 +277,12 @@ describe("API client", () => {
       it("gets recovery blob with verification token", async () => {
         mockFetch.mockResolvedValueOnce({
           ok: true,
-          json: async () => ({ blob: '{"version":2}' }),
+          json: async () => ({ blob: '{"version":2}', root_key_version: 7 }),
         });
 
         const result = await api.getRecoveryBlob("test@example.com", "vt-123");
 
-        expect(result).toEqual({ blob: '{"version":2}' });
+        expect(result).toEqual({ blob: '{"version":2}', root_key_version: 7 });
         const call = mockFetch.mock.calls[0];
         expect(call[0]).toBe("/v1/accounts/recovery-blob/fetch");
         expect(call[1].method).toBe("POST");
@@ -413,17 +413,37 @@ describe("API client", () => {
   });
 
   describe("Recovery endpoints", () => {
-    it("calls recoverInit", async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: async () =>
-          JSON.stringify({ opaque_response: "resp", state_token: "st-123", user_id: "u-123" }),
-      });
+    it.each([undefined, 0, 7])(
+      "calls recoverInit with optional root version %s",
+      async (version) => {
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          text: async () =>
+            JSON.stringify({ opaque_response: "resp", state_token: "st-123", user_id: "u-123" }),
+        });
 
-      const result = await api.recoverInit("test@example.com", "opaque-req", "vt-123", "cap");
+        const result = await api.recoverInit(
+          "test@example.com",
+          "opaque-req",
+          "vt-123",
+          "cap",
+          version,
+        );
 
-      expect(result).toEqual({ opaque_response: "resp", state_token: "st-123", user_id: "u-123" });
-    });
+        expect(result).toEqual({
+          opaque_response: "resp",
+          state_token: "st-123",
+          user_id: "u-123",
+        });
+        expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({
+          email: "test@example.com",
+          opaque_request: "opaque-req",
+          verification_token: "vt-123",
+          cap_token: "cap",
+          ...(version !== undefined && { expected_root_version: version }),
+        });
+      },
+    );
 
     it("calls recoverFinalize with wrapped root key", async () => {
       mockFetch.mockResolvedValueOnce({

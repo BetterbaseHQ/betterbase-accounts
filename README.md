@@ -96,6 +96,15 @@ The storage layer is trait-based with 16+ async traits organized by domain. The 
 
 `LISTEN_ADDR` (default `0.0.0.0:5377`), `LOG_FORMAT` (`text`/`json`), `WEB_BASE_URL`, `SYNC_ENDPOINT`, `FEDERATION_WS_ENDPOINT`, `CAP_KEY_ID` + `CAP_SECRET` + `CAP_VERIFY_URL` (enables proof-of-work), `SMTP_DEV_MODE` (logs emails instead of sending), `SMTP_HOST`/`SMTP_PORT`/`SMTP_USERNAME`/`SMTP_PASSWORD`/`SMTP_FROM`.
 
+## Deployment compatibility
+
+Temporary authentication state tokens are bound to their registration, login,
+password-change, or recovery flow and credential version. When upgrading from a
+build without these bindings, replace all server instances together. In-progress
+flows using older state tokens must restart; existing auth sessions are unchanged.
+These temporary tokens have a 60-second lifetime. Migrations 0004–0005 store
+credential and root-key snapshots on the server and run automatically at startup.
+
 ## Development
 
 ### Prerequisites

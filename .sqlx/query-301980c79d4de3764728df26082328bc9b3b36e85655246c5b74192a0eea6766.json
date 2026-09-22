@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO accounts (issuer, username, email)\n            VALUES ($1, $2, $3)\n            ON CONFLICT (issuer, username) DO UPDATE SET issuer = EXCLUDED.issuer\n            RETURNING id, issuer, username, email,\n                      opaque_record, wrapped_root_key,\n                      created_at, updated_at\n            ",
+  "query": "\n            SELECT id, issuer, username, email,\n                   opaque_record, wrapped_root_key, credentials_version, root_key_version,\n                   created_at, updated_at\n            FROM accounts WHERE issuer = $1 AND username = $2\n            ",
   "describe": {
     "columns": [
       {
@@ -35,18 +35,27 @@
       },
       {
         "ordinal": 6,
+        "name": "credentials_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "root_key_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 7,
+        "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
         "Text",
         "Text"
       ]
@@ -59,8 +68,10 @@
       true,
       true,
       false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "11625f3338864447cc36474cb3727784015c5b5f2e3008ccd9efb4a33a1db28c"
+  "hash": "301980c79d4de3764728df26082328bc9b3b36e85655246c5b74192a0eea6766"
 }
