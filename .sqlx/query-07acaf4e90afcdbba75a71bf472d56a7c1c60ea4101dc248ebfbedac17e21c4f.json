@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO oauth_grants (client_id, account_id, scope, keys_jwk_thumbprint)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (client_id, account_id) DO UPDATE\n            SET keys_jwk_thumbprint = EXCLUDED.keys_jwk_thumbprint,\n                last_used_at        = NOW()\n            RETURNING id, client_id, account_id, scope,\n                      keys_jwk_thumbprint, app_public_key, app_keypair_blob,\n                      wrapped_scoped_key, mailbox_id,\n                      created_at, updated_at, last_used_at\n            ",
+  "query": "\n            INSERT INTO oauth_grants (client_id, account_id, scope, keys_jwk_thumbprint)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (client_id, account_id) DO UPDATE\n            SET keys_jwk_thumbprint = EXCLUDED.keys_jwk_thumbprint,\n                scope               = EXCLUDED.scope,\n                last_used_at        = NOW()\n            RETURNING id, client_id, account_id, scope,\n                      keys_jwk_thumbprint, app_public_key, app_keypair_blob,\n                      wrapped_scoped_key, mailbox_id,\n                      created_at, updated_at, last_used_at\n            ",
   "describe": {
     "columns": [
       {
@@ -87,5 +87,5 @@
       false
     ]
   },
-  "hash": "79b8f70c9fdbe57b4fc31bc989a5a3640ec21830150ada3199912bae319cf7c9"
+  "hash": "07acaf4e90afcdbba75a71bf472d56a7c1c60ea4101dc248ebfbedac17e21c4f"
 }

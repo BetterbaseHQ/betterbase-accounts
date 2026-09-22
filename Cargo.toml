@@ -24,6 +24,7 @@ repository = "https://github.com/BetterbaseHQ/betterbase-accounts"
 
 [workspace.dependencies]
 anyhow = "1.0"
+futures = "0.3"
 josekit = "0.10"
 opaque-ke = { version = "4.1.0-pre.1", features = ["ristretto255", "serde"] }
 async-trait = "0.1"

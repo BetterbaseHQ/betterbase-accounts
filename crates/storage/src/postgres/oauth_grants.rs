@@ -68,7 +68,12 @@ impl OAuthGrantStorage for PostgresStorage {
             r#"
             INSERT INTO oauth_grants (client_id, account_id, scope)
             VALUES ($1, $2, $3)
-            ON CONFLICT (client_id, account_id) DO UPDATE SET last_used_at = NOW()
+            ON CONFLICT (client_id, account_id) DO UPDATE
+            -- AUD-013: the stored grant tracks the CURRENT authorization's
+            -- scope, so refresh cannot resurrect a historically broader
+            -- consent after a later narrow one
+            SET scope        = EXCLUDED.scope,
+                last_used_at = NOW()
             RETURNING id, client_id, account_id, scope,
                       keys_jwk_thumbprint, app_public_key, app_keypair_blob,
                       wrapped_scoped_key, mailbox_id,
@@ -100,6 +105,7 @@ impl OAuthGrantStorage for PostgresStorage {
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (client_id, account_id) DO UPDATE
             SET keys_jwk_thumbprint = EXCLUDED.keys_jwk_thumbprint,
+                scope               = EXCLUDED.scope,
                 last_used_at        = NOW()
             RETURNING id, client_id, account_id, scope,
                       keys_jwk_thumbprint, app_public_key, app_keypair_blob,

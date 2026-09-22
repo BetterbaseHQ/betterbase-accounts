@@ -204,6 +204,18 @@ pub struct VerificationCode {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Outcome of an atomic verification-code consume ([`VerificationStorage::consume_verification_code`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsumeVerificationCode {
+    /// Correct code: attempts committed, row deleted. Carries the code id
+    /// (used as the JTI of one-time-use tokens).
+    Consumed(Uuid),
+    /// Wrong code: attempt counted (row deleted when the bound is hit).
+    Mismatch,
+    /// Attempt bound already reached; no comparison was performed.
+    Exhausted,
+}
+
 /// Input to batch grant key updates.
 #[derive(Debug, Clone)]
 pub struct GrantKeyUpdate {
@@ -486,6 +498,18 @@ pub trait VerificationStorage: Send + Sync {
         email: &str,
         purpose: &str,
     ) -> Result<VerificationCode, StorageError>;
+    /// Atomically verify and consume the latest code for an email+purpose
+    /// (AUD-014). The row is locked for the whole operation, so concurrent
+    /// verifications serialize: at most one caller ever sees `Consumed`,
+    /// and the attempt bound cannot be exceeded. The caller performs the
+    /// constant-time hash comparison decision via the returned outcome.
+    async fn consume_verification_code(
+        &self,
+        email: &str,
+        purpose: &str,
+        code_hash: &[u8],
+        max_attempts: i32,
+    ) -> Result<ConsumeVerificationCode, StorageError>;
     async fn increment_verification_attempts(&self, id: Uuid) -> Result<(), StorageError>;
     async fn delete_verification_code(&self, id: Uuid) -> Result<(), StorageError>;
     async fn check_and_increment_send_rate(

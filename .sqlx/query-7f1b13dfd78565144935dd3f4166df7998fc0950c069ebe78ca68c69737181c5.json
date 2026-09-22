@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO oauth_grants (client_id, account_id, scope)\n            VALUES ($1, $2, $3)\n            ON CONFLICT (client_id, account_id) DO UPDATE SET last_used_at = NOW()\n            RETURNING id, client_id, account_id, scope,\n                      keys_jwk_thumbprint, app_public_key, app_keypair_blob,\n                      wrapped_scoped_key, mailbox_id,\n                      created_at, updated_at, last_used_at\n            ",
+  "query": "\n            INSERT INTO oauth_grants (client_id, account_id, scope)\n            VALUES ($1, $2, $3)\n            ON CONFLICT (client_id, account_id) DO UPDATE\n            -- AUD-013: the stored grant tracks the CURRENT authorization's\n            -- scope, so refresh cannot resurrect a historically broader\n            -- consent after a later narrow one\n            SET scope        = EXCLUDED.scope,\n                last_used_at = NOW()\n            RETURNING id, client_id, account_id, scope,\n                      keys_jwk_thumbprint, app_public_key, app_keypair_blob,\n                      wrapped_scoped_key, mailbox_id,\n                      created_at, updated_at, last_used_at\n            ",
   "describe": {
     "columns": [
       {
@@ -86,5 +86,5 @@
       false
     ]
   },
-  "hash": "27f3b50bb601d5dcd576d7c6e2c6fcaad74a18e3f754260e4deaad709fee9ac8"
+  "hash": "7f1b13dfd78565144935dd3f4166df7998fc0950c069ebe78ca68c69737181c5"
 }

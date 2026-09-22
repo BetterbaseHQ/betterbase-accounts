@@ -5,7 +5,9 @@
 use std::time::Duration;
 
 use betterbase_accounts_email::VerificationEmail;
-use betterbase_accounts_storage::{StorageError, VerificationCode, VerificationStorage};
+use betterbase_accounts_storage::{
+    ConsumeVerificationCode, StorageError, VerificationCode, VerificationStorage,
+};
 use rand::RngExt;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -76,47 +78,24 @@ pub async fn send_code(state: &AppState, email: &str, purpose: &str) -> Result<(
 /// Verify a code for the given email and purpose.
 ///
 /// Returns the verification code UUID on success (used as JTI for one-time-use tokens).
+///
+/// AUD-014: consumption is a single atomic storage operation — at most one
+/// concurrent caller can succeed per issued code, and the 5-attempt bound
+/// is enforced under a row lock rather than on a stale read snapshot.
 pub async fn verify_code(
     state: &AppState,
     email: &str,
     purpose: &str,
     code: &str,
 ) -> Result<Uuid, StorageError> {
-    let record = state
-        .storage
-        .get_latest_verification_code_by_email(email, purpose)
-        .await?;
-
-    if record.attempts >= MAX_VERIFICATION_ATTEMPTS {
-        let _ = state.storage.delete_verification_code(record.id).await;
-        return Err(StorageError::VerificationMaxAttempts);
-    }
-
-    // Increment before checking (prevents timing attacks)
-    state
-        .storage
-        .increment_verification_attempts(record.id)
-        .await?;
-
     let expected = hash_code(code);
-    if !constant_time_eq(&expected, &record.code_hash) {
-        if record.attempts + 1 >= MAX_VERIFICATION_ATTEMPTS {
-            let _ = state.storage.delete_verification_code(record.id).await;
-        }
-        return Err(StorageError::VerificationCodeNotFound);
+    match state
+        .storage
+        .consume_verification_code(email, purpose, &expected, MAX_VERIFICATION_ATTEMPTS)
+        .await?
+    {
+        ConsumeVerificationCode::Consumed(id) => Ok(id),
+        ConsumeVerificationCode::Mismatch => Err(StorageError::VerificationCodeNotFound),
+        ConsumeVerificationCode::Exhausted => Err(StorageError::VerificationMaxAttempts),
     }
-
-    let _ = state.storage.delete_verification_code(record.id).await;
-    Ok(record.id)
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut result: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-    result == 0
 }

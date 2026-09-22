@@ -11,6 +11,7 @@ description = "PostgreSQL storage traits and implementation"
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+futures.workspace = true
 hex.workspace = true
 hmac.workspace = true
 betterbase-accounts-core = { path = "../core" }

@@ -3,7 +3,10 @@ use chrono::{DateTime, Utc};
 use std::time::Duration;
 use uuid::Uuid;
 
-use crate::{StorageError, VerificationCode, VerificationStorage, VerificationTokenStorage};
+use crate::{
+    ConsumeVerificationCode, StorageError, VerificationCode, VerificationStorage,
+    VerificationTokenStorage,
+};
 
 use super::{rate_limit_key, PostgresStorage};
 
@@ -109,6 +112,85 @@ impl VerificationStorage for PostgresStorage {
         Ok(())
     }
 
+    async fn consume_verification_code(
+        &self,
+        email: &str,
+        purpose: &str,
+        code_hash: &[u8],
+        max_attempts: i32,
+    ) -> Result<ConsumeVerificationCode, StorageError> {
+        // AUD-014: read/increment/delete run in one transaction with the
+        // row locked, so concurrent verifications serialize on the lock
+        // instead of racing on a stale snapshot (duplicate successes and
+        // attempt-bound overruns were both demonstrated against the
+        // per-statement implementation).
+        let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+
+        let row = sqlx::query_as!(
+            VerificationCodeRow,
+            r#"
+            SELECT id, email, code_hash, purpose, attempts, created_at, expires_at
+            FROM email_verification_codes
+            WHERE email = $1 AND purpose = $2
+            ORDER BY created_at DESC
+            LIMIT 1
+            FOR UPDATE
+            "#,
+            email,
+            purpose,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StorageError::from)?;
+
+        let Some(row) = row else {
+            tx.rollback().await.map_err(StorageError::from)?;
+            return Err(StorageError::VerificationCodeNotFound);
+        };
+        if row.expires_at < Utc::now() {
+            tx.rollback().await.map_err(StorageError::from)?;
+            return Err(StorageError::VerificationCodeExpired);
+        }
+
+        if row.attempts >= max_attempts {
+            sqlx::query!("DELETE FROM email_verification_codes WHERE id = $1", row.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(StorageError::from)?;
+            tx.commit().await.map_err(StorageError::from)?;
+            return Ok(ConsumeVerificationCode::Exhausted);
+        }
+
+        // Count the attempt before comparing (timing-attack posture of the
+        // original flow is preserved: the hash comparison cost is constant
+        // either way, but attempts are committed regardless of outcome).
+        sqlx::query!(
+            "UPDATE email_verification_codes SET attempts = attempts + 1 WHERE id = $1",
+            row.id,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(StorageError::from)?;
+
+        if !constant_time_eq(code_hash, &row.code_hash) {
+            if row.attempts + 1 >= max_attempts {
+                sqlx::query!("DELETE FROM email_verification_codes WHERE id = $1", row.id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(StorageError::from)?;
+            }
+            tx.commit().await.map_err(StorageError::from)?;
+            return Ok(ConsumeVerificationCode::Mismatch);
+        }
+
+        sqlx::query!("DELETE FROM email_verification_codes WHERE id = $1", row.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(StorageError::from)?;
+        tx.commit().await.map_err(StorageError::from)?;
+        Ok(ConsumeVerificationCode::Consumed(row.id))
+    }
+
     async fn delete_verification_code(&self, id: Uuid) -> Result<(), StorageError> {
         sqlx::query!("DELETE FROM email_verification_codes WHERE id = $1", id,)
             .execute(&self.pool)
@@ -190,6 +272,18 @@ impl VerificationTokenStorage for PostgresStorage {
         }
         Ok(())
     }
+}
+
+/// Length-safe constant-time byte comparison.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut result: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        result |= x ^ y;
+    }
+    result == 0
 }
 
 #[cfg(test)]
@@ -396,5 +490,114 @@ mod tests {
                 .unwrap_err(),
             StorageError::VerificationTokenUsed
         ));
+    }
+
+    // ── Atomic consume (AUD-014) ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn consume_succeeds_exactly_once_then_row_is_gone() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let created = code(Utc::now());
+        storage
+            .create_verification_code(&created)
+            .await
+            .expect("create code");
+
+        let outcome = storage
+            .consume_verification_code(TEST_EMAIL, PURPOSE, &[0x42; 32], 5)
+            .await
+            .expect("consume");
+        assert_eq!(
+            outcome,
+            crate::ConsumeVerificationCode::Consumed(created.id)
+        );
+
+        // Row deleted: a second presentation of the same (correct) code fails.
+        assert!(matches!(
+            storage
+                .consume_verification_code(TEST_EMAIL, PURPOSE, &[0x42; 32], 5)
+                .await
+                .unwrap_err(),
+            StorageError::VerificationCodeNotFound
+        ));
+    }
+
+    #[tokio::test]
+    async fn concurrent_correct_codes_produce_exactly_one_success() {
+        // AUD-014 reproduction: the audit demonstrated two concurrent
+        // verifications of one code BOTH succeeding against the
+        // per-statement implementation. Under the row-locked consume the
+        // second must fail.
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        storage
+            .create_verification_code(&code(Utc::now()))
+            .await
+            .expect("create code");
+
+        let (a, b) = tokio::join!(
+            storage.consume_verification_code(TEST_EMAIL, PURPOSE, &[0x42; 32], 5),
+            storage.consume_verification_code(TEST_EMAIL, PURPOSE, &[0x42; 32], 5),
+        );
+        let consumed = usize::from(a.is_ok()) + usize::from(b.is_ok());
+        assert_eq!(consumed, 1, "exactly one concurrent consume may succeed");
+    }
+
+    #[tokio::test]
+    async fn concurrent_wrong_codes_cannot_exceed_the_attempt_bound() {
+        // AUD-014 reproduction: the attempt bound could be overrun under
+        // concurrency. Six concurrent wrong guesses must produce exactly
+        // five counted attempts (the sixth finds the row deleted).
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let created = code(Utc::now());
+        storage
+            .create_verification_code(&created)
+            .await
+            .expect("create code");
+
+        let wrong = &[0x00; 32];
+        let mut joins = Vec::new();
+        for _ in 0..6 {
+            joins.push(storage.consume_verification_code(TEST_EMAIL, PURPOSE, wrong, 5));
+        }
+        let results = futures::future::join_all(joins).await;
+
+        let mismatches = results
+            .iter()
+            .filter(|r| matches!(r, Ok(crate::ConsumeVerificationCode::Mismatch)))
+            .count();
+        let errors = results.iter().filter(|r| r.is_err()).count();
+        assert_eq!(mismatches, 5, "at most max_attempts comparisons may happen");
+        assert_eq!(errors, 1, "the sixth guess finds the row consumed");
+    }
+
+    #[tokio::test]
+    async fn consume_reports_exhausted_without_comparing() {
+        let Some(storage) = test_storage().await else {
+            return;
+        };
+        let created = code(Utc::now());
+        storage
+            .create_verification_code(&created)
+            .await
+            .expect("create code");
+        for _ in 0..5 {
+            storage
+                .increment_verification_attempts(created.id)
+                .await
+                .expect("increment attempts");
+        }
+
+        // Even the CORRECT hash must not succeed past the bound.
+        let outcome = storage
+            .consume_verification_code(TEST_EMAIL, PURPOSE, &[0x42; 32], 5)
+            .await
+            .expect("consume outcome");
+        assert_eq!(outcome, crate::ConsumeVerificationCode::Exhausted);
     }
 }
