@@ -380,6 +380,11 @@ pub struct ServerMetadataResponse {
     pub webfinger: String,
     pub protocols: Vec<String>,
     pub pow_required: bool,
+    /// Site key id for the CAP proof-of-work widget. Present iff PoW is
+    /// enabled; lets image-deployed web UIs (which cannot bake the key at
+    /// build time) configure the widget at runtime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cap_key_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

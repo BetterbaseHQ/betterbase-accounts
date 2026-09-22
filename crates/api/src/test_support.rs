@@ -95,6 +95,7 @@ pub(crate) async fn test_app() -> Option<TestApp> {
         federation_ws_endpoint: None,
         web_base_url: "https://accounts.example.test".to_owned(),
         cap_enabled: false,
+        cap_key_id: String::new(),
     });
 
     let state = AppState {

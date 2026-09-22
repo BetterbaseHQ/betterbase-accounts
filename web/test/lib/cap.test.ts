@@ -33,11 +33,41 @@ describe("CAP module", () => {
     it("returns empty string when CAP_KEY_ID is not configured", async () => {
       // Mock environment without CAP_KEY_ID
       vi.stubEnv("VITE_CAP_KEY_ID", "");
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("no network")));
 
       const { solveCAPChallenge } = await import("@/lib/cap");
       const result = await solveCAPChallenge();
 
       expect(result).toBe("");
+    });
+
+    it("resolves the site key from discovery metadata when not baked at build time", async () => {
+      // Image deployments cannot bake the key: it is provisioned per
+      // deployment and exposed via /.well-known/betterbase
+      vi.stubEnv("VITE_CAP_KEY_ID", "");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ pow_required: true, cap_key_id: "discovered-key" }),
+        }),
+      );
+
+      const mockSolve = vi.fn().mockResolvedValue({ token: "discovered-token" });
+      const mockCap = vi.fn().mockImplementation(function (this: CAPWidgetMock) {
+        this.solve = mockSolve;
+      }) as unknown as CapConstructorMock;
+
+      global.window = {
+        ...global.window,
+        Cap: mockCap,
+      } as Window & typeof globalThis;
+
+      const { solveCAPChallenge } = await import("@/lib/cap");
+      const result = await solveCAPChallenge();
+
+      expect(result).toBe("discovered-token");
+      expect(mockCap).toHaveBeenCalledWith({ apiEndpoint: "/cap/discovered-key/" });
     });
 
     it("solves challenge when CAP is configured and available", async () => {

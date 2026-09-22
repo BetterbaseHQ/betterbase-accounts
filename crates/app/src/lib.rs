@@ -209,6 +209,7 @@ pub async fn run(config: AppConfig) -> Result<()> {
         federation_ws_endpoint: config.federation_ws_endpoint.clone(),
         web_base_url: config.web_base_url.clone(),
         cap_enabled: config.cap_enabled,
+        cap_key_id: config.cap_key_id.clone(),
     });
 
     let app_state = AppState {

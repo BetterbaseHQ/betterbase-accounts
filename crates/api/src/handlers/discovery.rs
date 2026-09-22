@@ -24,6 +24,7 @@ pub async fn handle_server_metadata(State(state): State<AppState>) -> Response {
         webfinger: format!("{}/.well-known/webfinger", state.config.issuer),
         protocols: vec!["betterbase-rpc-v1".to_string()],
         pow_required: state.config.cap_enabled,
+        cap_key_id: (!state.config.cap_key_id.is_empty()).then(|| state.config.cap_key_id.clone()),
     };
 
     (

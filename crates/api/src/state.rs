@@ -22,6 +22,9 @@ pub struct ApiConfig {
     pub web_base_url: String,
     /// Whether CAP proof-of-work is required
     pub cap_enabled: bool,
+    /// CAP site key id (empty when PoW is disabled); exposed via discovery
+    /// so image-deployed web UIs can configure the widget at runtime
+    pub cap_key_id: String,
 }
 
 /// Shared state available to all handlers via `State<AppState>`.
