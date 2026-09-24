@@ -39,6 +39,10 @@ export default defineConfig({
         target: "http://localhost:5377",
         changeOrigin: true,
       },
+      "/.well-known": {
+        target: "http://localhost:5377",
+        changeOrigin: true,
+      },
       // CAP proof-of-work assets and API (served by CAP container in dev)
       "/cap": {
         target: process.env.VITE_CAP_URL || "http://localhost:3000",
