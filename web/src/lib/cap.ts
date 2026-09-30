@@ -34,7 +34,12 @@ function resolveCapKeyId(): Promise<string> {
   if (BUILD_CAP_KEY_ID) return Promise.resolve(BUILD_CAP_KEY_ID);
 
   if (!keyIdPromise) {
-    keyIdPromise = fetch("/.well-known/betterbase")
+    keyIdPromise = fetch("/.well-known/betterbase", {
+      // The CAP gate sits on the login path — never ride a stale cached
+      // discovery response (max-age 3600) or a CAP toggle bricks sign-in
+      // until the cache expires. 293 bytes; revalidation is free.
+      cache: "no-cache",
+    })
       .then((r) => (r.ok ? r.json() : Promise.resolve({})))
       .then((meta: { cap_key_id?: string }) => {
         const keyId = meta.cap_key_id ?? "";
