@@ -415,7 +415,9 @@ async fn recovery_rejects_a_blob_snapshot_rotated_before_init_without_consuming_
 
 #[tokio::test]
 async fn cors_preflight_is_cacheable_and_allows_app_headers() {
-    let Some(app) = test_app().await else { return; };
+    let Some(app) = test_app().await else {
+        return;
+    };
 
     let request = Request::builder()
         .method("OPTIONS")
