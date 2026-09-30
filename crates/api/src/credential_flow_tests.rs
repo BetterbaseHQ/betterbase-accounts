@@ -3,7 +3,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use betterbase_accounts_auth::{
-    jwt::StatePurpose,
+    jwt::{OAuthAccessClaims, StatePurpose},
     opaque::{test_registration_start, test_registration_upload, TestLogin},
 };
 use betterbase_accounts_storage::{
@@ -452,4 +452,58 @@ async fn cors_preflight_is_cacheable_and_allows_app_headers() {
         Some("86400"),
         "preflight must be cacheable for 24h"
     );
+}
+
+/// Mint an OAuth access token for `client_id` without running the consent
+/// flow — handler tests only need claims that pass `extract_oauth_token`.
+fn oauth_access_token(app: &TestApp, account_id: &str, client_id: &str) -> String {
+    let now = chrono::Utc::now();
+    app.jwt
+        .create_oauth_access_token(OAuthAccessClaims {
+            sub: account_id.to_string(),
+            iss: TEST_ISSUER.to_string(),
+            aud: vec![TEST_ISSUER.to_string()],
+            iat: now.timestamp(),
+            exp: (now + chrono::Duration::minutes(10)).timestamp(),
+            client_id: client_id.to_string(),
+            grant_id: Uuid::new_v4().to_string(),
+            scope: "sync".to_string(),
+            did: "did:key:test".to_string(),
+            personal_space_id: Uuid::new_v4().to_string(),
+            mailbox_id: None,
+        })
+        .expect("access token")
+}
+
+#[tokio::test]
+async fn user_public_key_distinguishes_missing_user_from_unconnected_app() {
+    let Some(app) = test_app().await else {
+        return;
+    };
+    let account = registered_account(&app).await;
+    let client_id = "11111111-1111-1111-1111-111111111111";
+    let token = oauth_access_token(&app, &account.id.to_string(), client_id);
+
+    // Recipient exists but never connected this app: distinct code so
+    // sharing UIs can say "hasn't connected this app" instead of
+    // "user not found".
+    let (status, body) = get_json(
+        &app,
+        &format!("/v1/users/{}/keys/{client_id}", account.username),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "user_key_not_provisioned", "{body}");
+
+    // Unknown recipient stays indistinguishable from other failures
+    // (anti-enumeration): plain 404 without a code.
+    let (status, body) = get_json(
+        &app,
+        &format!("/v1/users/nobody/keys/{client_id}"),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body.get("code"), None, "{body}");
 }

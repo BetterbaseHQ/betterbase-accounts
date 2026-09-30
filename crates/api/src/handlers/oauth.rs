@@ -1201,22 +1201,36 @@ pub async fn handle_user_public_key(
     let client_id =
         Uuid::parse_str(&client_id_str).map_err(|_| ApiError::not_found("not found"))?;
 
-    // Look up account by username (any user, not just the caller)
+    // Look up account by username (any user, not just the caller). Absent
+    // accounts stay indistinguishable from other failures (anti-enumeration).
     let account = state
         .storage
         .get_account_by_username(&state.config.issuer, &username)
         .await
         .map_err(|_| ApiError::not_found("not found"))?;
 
+    // The account exists but has no grant for this app: tell the caller
+    // (only authenticated apps, scoped to their own client id) with a
+    // distinct code so sharing UIs can say "recipient hasn't connected
+    // this app yet" instead of "user not found".
     let grant = state
         .storage
         .get_oauth_grant_by_account_and_client(account.id, client_id)
         .await
-        .map_err(|_| ApiError::not_found("not found"))?;
+        .map_err(|e| match e {
+            StorageError::OAuthGrantNotFound => ApiError::not_found_with_code(
+                "user has not connected this app",
+                "user_key_not_provisioned",
+            ),
+            _ => ApiError::not_found("not found"),
+        })?;
 
-    let public_key = grant
-        .app_public_key
-        .ok_or_else(|| ApiError::not_found("not found"))?;
+    let public_key = grant.app_public_key.ok_or_else(|| {
+        ApiError::not_found_with_code(
+            "user has not connected this app",
+            "user_key_not_provisioned",
+        )
+    })?;
 
     // Anti-enumeration: treat malformed keys same as missing
     let did = compute_did_key(&public_key).map_err(|_| ApiError::not_found("not found"))?;

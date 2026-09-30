@@ -10,6 +10,9 @@ use serde_json::json;
 pub struct ApiError {
     pub status: StatusCode,
     pub message: String,
+    /// Machine-readable error code for clients that need to branch on the
+    /// failure reason beyond the HTTP status (absent for most errors).
+    pub code: Option<&'static str>,
 }
 
 impl ApiError {
@@ -17,6 +20,7 @@ impl ApiError {
         Self {
             status,
             message: message.into(),
+            code: None,
         }
     }
 
@@ -36,6 +40,15 @@ impl ApiError {
         Self::new(StatusCode::NOT_FOUND, msg)
     }
 
+    /// 404 carrying a machine-readable code so clients can distinguish
+    /// not-found variants that share a status (anti-enumeration keeps them
+    /// off the status line).
+    pub fn not_found_with_code(msg: impl Into<String>, code: &'static str) -> Self {
+        let mut err = Self::new(StatusCode::NOT_FOUND, msg);
+        err.code = Some(code);
+        err
+    }
+
     pub fn conflict(msg: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, msg)
     }
@@ -51,7 +64,10 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = json!({ "error": self.message });
+        let body = match self.code {
+            Some(code) => json!({ "error": self.message, "code": code }),
+            None => json!({ "error": self.message }),
+        };
         (self.status, axum::Json(body)).into_response()
     }
 }
