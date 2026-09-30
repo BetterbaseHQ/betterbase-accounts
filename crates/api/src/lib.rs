@@ -19,6 +19,7 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
+use std::time::Duration;
 use tower_http::{
     cors::{Any, CorsLayer},
     limit::RequestBodyLimitLayer,
@@ -42,6 +43,10 @@ pub fn build_router(state: AppState) -> Router {
             Method::OPTIONS,
         ])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+        // Browsers otherwise re-preflight every authorized cross-origin call
+        // (the SDK fetches user keys from app origins). 24h matches sync's
+        // hand-rolled preflight and the previous edge-proxy behaviour.
+        .max_age(Duration::from_secs(24 * 60 * 60))
         .allow_origin(Any);
 
     Router::new()

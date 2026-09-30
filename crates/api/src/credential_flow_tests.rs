@@ -1,5 +1,6 @@
 //! Regression coverage for flow binding and credential revocation.
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use betterbase_accounts_auth::{
     jwt::StatePurpose,
@@ -9,6 +10,7 @@ use betterbase_accounts_storage::{
     Account, AccountStorage, CompositeStorage, RegistrationState, RegistrationStateStorage,
 };
 use serde_json::json;
+use tower::ServiceExt;
 use uuid::Uuid;
 
 use crate::test_support::{get_json, post_json, test_app, TestApp, TEST_ISSUER};
@@ -409,4 +411,43 @@ async fn recovery_rejects_a_blob_snapshot_rotated_before_init_without_consuming_
     body["expected_root_version"] = fetched["root_key_version"].clone();
     let (status, response) = post_json(&app, "/v1/accounts/recover/init", None, &body).await;
     assert_eq!(status, StatusCode::OK, "{response}");
+}
+
+#[tokio::test]
+async fn cors_preflight_is_cacheable_and_allows_app_headers() {
+    let Some(app) = test_app().await else { return; };
+
+    let request = Request::builder()
+        .method("OPTIONS")
+        .uri("/v1/users/alice/keys/00000000-0000-0000-0000-000000000000")
+        .header("origin", "https://app.example.test")
+        .header("access-control-request-method", "GET")
+        .header("access-control-request-headers", "authorization")
+        .body(Body::empty())
+        .expect("build request");
+    let response = app.router.clone().oneshot(request).await.expect("dispatch");
+
+    let headers = response.headers();
+    assert_eq!(
+        headers
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("*")
+    );
+    assert!(
+        headers
+            .get("access-control-allow-headers")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.to_ascii_lowercase().contains("authorization")),
+        "preflight must allow the Authorization header"
+    );
+    // Without max-age browsers re-preflight every authorized cross-origin
+    // call — the SDK's user-key fetch would double its requests.
+    assert_eq!(
+        headers
+            .get("access-control-max-age")
+            .and_then(|v| v.to_str().ok()),
+        Some("86400"),
+        "preflight must be cacheable for 24h"
+    );
 }
