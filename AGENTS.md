@@ -70,7 +70,7 @@ Trait-based with 16+ async traits organized by domain: accounts, registration, l
 React SPA (Vite + Tailwind) built into `crates/api/assets/` and embedded via `rust-embed`. SPA fallback serves `index.html` for non-file paths.
 
 ### Background Tasks
-60-second cleanup loop purges expired: registration/login states, OAuth codes, refresh tokens, used refresh tokens (>7 days), verification codes, verification token JTIs.
+60-second cleanup loop purges expired: registration/login states, OAuth codes, refresh tokens, used refresh tokens (>7 days), verification codes, verification token JTIs, and abandoned account reservations (>7 days).
 
 ### Middleware
 - CORS (permissive: any origin, standard methods/headers)
@@ -112,6 +112,7 @@ All routes are immutable v1 contracts -- paths must not change without a version
 - `WEB_BASE_URL` -- Base URL for web UI links
 - `SYNC_ENDPOINT` -- Sync service URL
 - `FEDERATION_WS_ENDPOINT` -- Federation WebSocket endpoint
+- `ACCOUNTS_PUBLIC_URL` -- Base URL at which the accounts API is publicly served; used in discovery/docs for `/.well-known/*` paths. Defaults to `OAUTH_ISSUER` when unset. Must be a bare `http(s)://host` base (no path/query/userinfo) or `validate()` fails at startup (see `AppConfig::normalize_public_url`)
 - `CAP_KEY_ID`, `CAP_SECRET`, `CAP_VERIFY_URL` -- CAP proof-of-work (enabled when `CAP_KEY_ID` is set)
 - `SMTP_DEV_MODE` -- `true` to log emails instead of sending
 - `SMTP_HOST`, `SMTP_PORT` (default 587), `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`
