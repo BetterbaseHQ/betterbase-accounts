@@ -24,6 +24,11 @@ pub struct AppConfig {
     pub opaque_server_setup: String,
     /// OAuth issuer URL
     pub oauth_issuer: String,
+    /// Base URL the API + web UI are served at, when different from the
+    /// issuer (e.g. issuer `https://betterbase.dev` — the identity anchor
+    /// that discovery/webfinger resolve — while the service lives at
+    /// `https://accounts.betterbase.dev`). Defaults to the issuer.
+    pub accounts_public_url: Option<String>,
     /// HMAC key for privacy-hashing emails in rate limits (hex, 32 bytes)
     pub identity_hash_key: String,
     /// HTTP listen address (default 0.0.0.0:5377)
@@ -58,6 +63,7 @@ impl AppConfig {
             database_url: require_env("DATABASE_URL")?,
             opaque_server_setup: require_env("OPAQUE_SERVER_SETUP")?,
             oauth_issuer: require_env("OAUTH_ISSUER")?,
+            accounts_public_url: std::env::var("ACCOUNTS_PUBLIC_URL").ok(),
             identity_hash_key: require_env("IDENTITY_HASH_KEY")?,
             listen_addr: std::env::var("LISTEN_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:5377".to_string()),
@@ -99,6 +105,26 @@ impl AppConfig {
     /// constructs fine and every outgoing email (verification, recovery)
     /// fails at send time with no startup signal (AUD-056).
     fn validate(&self) -> Result<()> {
+        if let Some(url) = self.accounts_public_url.as_deref() {
+            let u = url.trim();
+            let parsed = url::Url::parse(u);
+            let valid = parsed
+                .map(|p| {
+                    (p.scheme() == "http" || p.scheme() == "https")
+                        && p.host_str().is_some_and(|h| !h.is_empty())
+                        && p.path() == "/"
+                        && p.query().is_none()
+                        && p.fragment().is_none()
+                })
+                .unwrap_or(false);
+            if u.is_empty() || !valid {
+                anyhow::bail!(
+                    "ACCOUNTS_PUBLIC_URL must be a bare base URL like \
+                     'https://accounts.betterbase.dev' (scheme + host, no path/query), \
+                     got '{url}'"
+                );
+            }
+        }
         if !self.smtp_dev_mode && self.smtp_host.trim().is_empty() {
             anyhow::bail!(
                 "SMTP_HOST is required when SMTP_DEV_MODE is not true: email delivery is \
@@ -171,7 +197,14 @@ pub async fn run(config: AppConfig) -> Result<()> {
         anyhow::bail!("IDENTITY_HASH_KEY must be 32 bytes");
     }
 
+    // Handles read `user@<issuer domain>`; service URLs advertised in
+    // discovery come from ACCOUNTS_PUBLIC_URL when the services are hosted
+    // on a different domain than the identity anchor (issuer).
     let identity_domain = extract_domain(&config.oauth_issuer).to_string();
+    let accounts_public_url = config
+        .accounts_public_url
+        .clone()
+        .unwrap_or_else(|| config.oauth_issuer.clone());
 
     let jwt = Arc::new(JwtService::new(
         jwt_key.id,
@@ -205,6 +238,7 @@ pub async fn run(config: AppConfig) -> Result<()> {
     let api_config = Arc::new(ApiConfig {
         issuer: config.oauth_issuer.clone(),
         identity_domain,
+        accounts_public_url,
         sync_endpoint: config.sync_endpoint.clone(),
         federation_ws_endpoint: config.federation_ws_endpoint.clone(),
         web_base_url: config.web_base_url.clone(),
@@ -319,6 +353,7 @@ mod tests {
             database_url: "postgres://test".to_string(),
             opaque_server_setup: "00".to_string(),
             oauth_issuer: "https://accounts.test".to_string(),
+            accounts_public_url: None,
             identity_hash_key: "aa".repeat(32),
             listen_addr: "127.0.0.1:5377".to_string(),
             sync_endpoint: None,
@@ -361,5 +396,31 @@ mod tests {
         config.smtp_dev_mode = true;
         config.smtp_host = String::new();
         config.validate().expect("dev mailer needs no host");
+    }
+
+    #[test]
+    fn accounts_public_url_defaults_to_unset_and_validates_shape() {
+        let mut config = test_config();
+        config
+            .validate()
+            .expect("unset ACCOUNTS_PUBLIC_URL (issuer-hosted) is valid");
+
+        config.accounts_public_url = Some("https://accounts.test".to_string());
+        config.validate().expect("bare base URL is valid");
+
+        for bad in [
+            "",                           // empty
+            "accounts.test",              // no scheme
+            "https://accounts.test/v1",   // path
+            "https://accounts.test/?x=1", // query
+            "file://accounts.test",       // scheme
+        ] {
+            config.accounts_public_url = Some(bad.to_string());
+            let err = config.validate().unwrap_err().to_string();
+            assert!(
+                err.contains("ACCOUNTS_PUBLIC_URL"),
+                "unexpected error for {bad:?}: {err}"
+            );
+        }
     }
 }

@@ -91,6 +91,7 @@ pub(crate) async fn test_app() -> Option<TestApp> {
     let config = Arc::new(ApiConfig {
         issuer: TEST_ISSUER.to_owned(),
         identity_domain,
+        accounts_public_url: TEST_ISSUER.to_owned(),
         sync_endpoint: None,
         federation_ws_endpoint: None,
         web_base_url: "https://accounts.example.test".to_owned(),

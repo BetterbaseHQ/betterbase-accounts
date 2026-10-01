@@ -21,3 +21,4 @@ betterbase-accounts-storage = { path = "../storage" }
 rand.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+url.workspace = true
