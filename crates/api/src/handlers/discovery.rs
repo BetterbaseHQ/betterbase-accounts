@@ -56,6 +56,16 @@ pub struct WebFingerQuery {
 }
 
 /// GET /.well-known/webfinger?resource=acct:user@domain
+/// The self link points at the canonical profile URL on the hosted service
+/// (accounts_public_url), which differs from the identity-anchor issuer
+/// when the API is served on another domain.
+fn webfinger_self_link(cfg: &ApiConfig, username: &str) -> WebFingerLink {
+    WebFingerLink {
+        rel: "self".to_string(),
+        href: Some(format!("{}/v1/users/{}", cfg.accounts_public_url, username)),
+    }
+}
+
 pub async fn handle_webfinger(
     State(state): State<AppState>,
     Query(query): Query<WebFingerQuery>,
@@ -108,13 +118,7 @@ pub async fn handle_webfinger(
         }
     };
 
-    let mut links = vec![WebFingerLink {
-        rel: "self".to_string(),
-        href: Some(format!(
-            "{}/v1/users/{}",
-            state.config.accounts_public_url, account.username
-        )),
-    }];
+    let mut links = vec![webfinger_self_link(&state.config, &account.username)];
 
     if let Some(sync) = &state.config.sync_endpoint {
         links.push(WebFingerLink {
@@ -177,6 +181,21 @@ mod tests {
         assert_eq!(
             meta.sync_endpoint.as_deref(),
             Some("https://sync.betterbase.dev/api/v1")
+        );
+    }
+
+    #[test]
+    fn webfinger_self_link_points_at_the_hosted_service() {
+        let mut cfg = base_config();
+        cfg.accounts_public_url = "https://accounts.betterbase.dev".to_string();
+        assert_eq!(
+            webfinger_self_link(&cfg, "alice").href.as_deref(),
+            Some("https://accounts.betterbase.dev/v1/users/alice")
+        );
+        // issuer-hosted default keeps the pre-split behavior
+        assert_eq!(
+            webfinger_self_link(&base_config(), "alice").href.as_deref(),
+            Some("https://betterbase.dev/v1/users/alice")
         );
     }
 

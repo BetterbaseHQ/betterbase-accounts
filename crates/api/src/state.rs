@@ -15,9 +15,10 @@ pub struct ApiConfig {
     pub issuer: String,
     /// Identity domain extracted from issuer (e.g. `betterbase.dev`)
     pub identity_domain: String,
-    /// Base URL where the API + web UI are actually served (discovery's
-    /// `accounts_endpoint`, jwks/webfinger URLs). Equals the issuer unless
-    /// the service is hosted on a different domain than the identity anchor.
+    /// Base URL the accounts API endpoints advertised in discovery
+    /// (accounts_endpoint, jwks/webfinger URLs) are served at. Equals the
+    /// issuer unless the API is hosted on a different domain than the
+    /// identity anchor. The web UI's own URL is `web_base_url`.
     pub accounts_public_url: String,
     /// Optional sync endpoint URL
     pub sync_endpoint: Option<String>,

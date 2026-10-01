@@ -24,9 +24,10 @@ pub struct AppConfig {
     pub opaque_server_setup: String,
     /// OAuth issuer URL
     pub oauth_issuer: String,
-    /// Base URL the API + web UI are served at, when different from the
-    /// issuer (e.g. issuer `https://betterbase.dev` — the identity anchor
-    /// that discovery/webfinger resolve — while the service lives at
+    /// Base URL the accounts API endpoints advertised in discovery are
+    /// served at, when different from the issuer (e.g. issuer
+    /// `https://betterbase.dev` — the identity anchor that handles and
+    /// WebFinger resolve — while the API lives at
     /// `https://accounts.betterbase.dev`). Defaults to the issuer.
     pub accounts_public_url: Option<String>,
     /// HMAC key for privacy-hashing emails in rate limits (hex, 32 bytes)
@@ -63,7 +64,13 @@ impl AppConfig {
             database_url: require_env("DATABASE_URL")?,
             opaque_server_setup: require_env("OPAQUE_SERVER_SETUP")?,
             oauth_issuer: require_env("OAUTH_ISSUER")?,
-            accounts_public_url: std::env::var("ACCOUNTS_PUBLIC_URL").ok(),
+            accounts_public_url: match std::env::var("ACCOUNTS_PUBLIC_URL") {
+                Ok(raw) => Some(Self::normalize_public_url(&raw)?),
+                Err(std::env::VarError::NotUnicode(_)) => {
+                    anyhow::bail!("ACCOUNTS_PUBLIC_URL is not valid UTF-8")
+                }
+                Err(_) => None,
+            },
             identity_hash_key: require_env("IDENTITY_HASH_KEY")?,
             listen_addr: std::env::var("LISTEN_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:5377".to_string()),
@@ -104,24 +111,45 @@ impl AppConfig {
     /// An empty SMTP host in SMTP mode is exactly such a case: the mailer
     /// constructs fine and every outgoing email (verification, recovery)
     /// fails at send time with no startup signal (AUD-056).
+    /// Normalizes ACCOUNTS_PUBLIC_URL into the canonical form discovery
+    /// joins `/.well-known/*` paths onto: the parsed serialization (lowercase
+    /// scheme/host, no empty port, no surrounding whitespace) without the
+    /// trailing slash. Rejects anything that is not a bare http(s) base URL:
+    /// no path, query, fragment, or userinfo — credentials embedded here
+    /// would be published verbatim in the public discovery document.
+    fn normalize_public_url(raw: &str) -> Result<String> {
+        let invalid = || {
+            anyhow::anyhow!(
+                "ACCOUNTS_PUBLIC_URL must be a bare base URL like \
+                 'https://accounts.betterbase.dev' (scheme + host, no \
+                 path/query/userinfo), got '{raw}'"
+            )
+        };
+        let parsed = url::Url::parse(raw.trim()).map_err(|_| invalid())?;
+        let valid = (parsed.scheme() == "http" || parsed.scheme() == "https")
+            && parsed.host_str().is_some_and(|h| !h.is_empty())
+            && parsed.username().is_empty()
+            && parsed.password().is_none()
+            && parsed.path() == "/"
+            && parsed.query().is_none()
+            && parsed.fragment().is_none();
+        if !valid {
+            return Err(invalid());
+        }
+        let serialized = parsed.as_str();
+        Ok(serialized
+            .strip_suffix('/')
+            .unwrap_or(serialized)
+            .to_string())
+    }
+
     fn validate(&self) -> Result<()> {
         if let Some(url) = self.accounts_public_url.as_deref() {
-            let u = url.trim();
-            let parsed = url::Url::parse(u);
-            let valid = parsed
-                .map(|p| {
-                    (p.scheme() == "http" || p.scheme() == "https")
-                        && p.host_str().is_some_and(|h| !h.is_empty())
-                        && p.path() == "/"
-                        && p.query().is_none()
-                        && p.fragment().is_none()
-                })
-                .unwrap_or(false);
-            if u.is_empty() || !valid {
+            let canonical = Self::normalize_public_url(url)?;
+            if canonical != url {
                 anyhow::bail!(
-                    "ACCOUNTS_PUBLIC_URL must be a bare base URL like \
-                     'https://accounts.betterbase.dev' (scheme + host, no path/query), \
-                     got '{url}'"
+                    "ACCOUNTS_PUBLIC_URL must be normalized: '{url}' \
+                     (expected '{canonical}'); from_env normalizes it automatically"
                 );
             }
         }
@@ -409,17 +437,57 @@ mod tests {
         config.validate().expect("bare base URL is valid");
 
         for bad in [
-            "",                           // empty
-            "accounts.test",              // no scheme
-            "https://accounts.test/v1",   // path
-            "https://accounts.test/?x=1", // query
-            "file://accounts.test",       // scheme
+            "",
+            "accounts.test",
+            "https://accounts.test/v1",
+            "https://accounts.test/?x=1",
+            "https://accounts.test#f",
+            "https://u:p@accounts.test",
+            "https://@accounts.test",
+            "file://accounts.test",
+            // valid shapes that must pass through from_env normalization
+            // before reaching AppConfig, never be stored raw
+            "https://accounts.test/",
+            " https://accounts.test ",
+            "HTTPS://ACCOUNTS.TEST",
+            "https://accounts.test:",
         ] {
             config.accounts_public_url = Some(bad.to_string());
             let err = config.validate().unwrap_err().to_string();
             assert!(
                 err.contains("ACCOUNTS_PUBLIC_URL"),
                 "unexpected error for {bad:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn accounts_public_url_env_values_are_normalized() {
+        assert_eq!(
+            AppConfig::normalize_public_url("https://accounts.test").unwrap(),
+            "https://accounts.test"
+        );
+        // trailing slash, padding, mixed case, and empty port all canonicalize
+        assert_eq!(
+            AppConfig::normalize_public_url(" https://Accounts.Test/ ").unwrap(),
+            "https://accounts.test"
+        );
+        assert_eq!(
+            AppConfig::normalize_public_url("https://accounts.test:").unwrap(),
+            "https://accounts.test"
+        );
+        for bad in [
+            "",
+            "accounts.test",
+            "https://accounts.test/v1",
+            "https://accounts.test?q",
+            "https://accounts.test#f",
+            "https://u:p@accounts.test",
+            "file://accounts.test",
+        ] {
+            assert!(
+                AppConfig::normalize_public_url(bad).is_err(),
+                "expected rejection: {bad:?}"
             );
         }
     }
