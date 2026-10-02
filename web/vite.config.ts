@@ -43,7 +43,11 @@ export default defineConfig({
         target: "http://localhost:5377",
         changeOrigin: true,
       },
-      // CAP proof-of-work assets and API (served by CAP container in dev)
+      // CAP proof-of-work assets + challenge API. The canonical route is
+      // Caddy's /cap/* tier on http://accounts.betterbase.localhost (same
+      // as prod); this proxy keeps the CAPTCHA working when doing web-UI
+      // development directly on localhost:5378. Requires the dev stack
+      // (CAP is published on 127.0.0.1:3000 by docker-compose.dev.yml).
       "/cap": {
         target: process.env.VITE_CAP_URL || "http://localhost:3000",
         changeOrigin: true,
