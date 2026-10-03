@@ -10,7 +10,6 @@ description = "OPAQUE registration/login and JWT/ES256 key management"
 
 [dependencies]
 async-trait.workspace = true
-axum.workspace = true
 hex.workspace = true
 base64.workspace = true
 bs58.workspace = true
@@ -36,3 +35,4 @@ default = []
 test-support = []
 
 [dev-dependencies]
+proptest.workspace = true

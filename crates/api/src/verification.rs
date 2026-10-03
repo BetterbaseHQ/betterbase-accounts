@@ -1,6 +1,4 @@
 //! Verification code service: generate, send, and verify 6-digit codes.
-//!
-//! Mirrors Go `services/verification.go`.
 
 use std::time::Duration;
 
@@ -64,6 +62,7 @@ pub async fn send_code(state: &AppState, email: &str, purpose: &str) -> Result<(
         to: email.to_string(),
         code,
         purpose: purpose.to_string(),
+        expires_in: VERIFICATION_CODE_EXPIRY,
     };
 
     state

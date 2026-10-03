@@ -18,9 +18,13 @@ use crate::test_support::{get_json, post_json, test_app, TestApp, TEST_ISSUER};
 const PASSWORD: &[u8] = b"original-password";
 
 async fn registered_account(app: &TestApp) -> Account {
+    registered_account_named(app, "alice", "alice@example.test").await
+}
+
+async fn registered_account_named(app: &TestApp, username: &str, email: &str) -> Account {
     let account = app
         .storage
-        .get_or_create_account(TEST_ISSUER, "alice", "alice@example.test")
+        .get_or_create_account(TEST_ISSUER, username, email)
         .await
         .expect("create account");
     let upload = test_registration_upload(&app.opaque, PASSWORD, account.id.as_bytes()).unwrap();
@@ -30,6 +34,91 @@ async fn registered_account(app: &TestApp) -> Account {
         .await
         .expect("register account");
     app.storage.get_account_by_id(account.id).await.unwrap()
+}
+
+async fn start_password_change(app: &TestApp, account: &Account) -> (String, Vec<u8>) {
+    let auth = app.auth_token(&account.id.to_string());
+    let (client, ke1) = TestLogin::start(PASSWORD);
+    let (status, init) = post_json(
+        app,
+        "/v1/accounts/password/change/init",
+        Some(&auth),
+        &json!({"opaque_ke1": B64.encode(ke1)}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{init}");
+    let proof = client.finish(
+        PASSWORD,
+        &B64.decode(init["opaque_ke2"].as_str().unwrap()).unwrap(),
+    );
+    (init["login_token"].as_str().unwrap().into(), proof)
+}
+
+async fn assert_credentials_unchanged(app: &TestApp, account: &Account) {
+    let current = app.storage.get_account_by_id(account.id).await.unwrap();
+    assert_eq!(current.opaque_record, account.opaque_record);
+    assert_eq!(current.wrapped_root_key, account.wrapped_root_key);
+    assert_eq!(current.credentials_version, account.credentials_version);
+    assert_eq!(current.root_key_version, account.root_key_version);
+}
+
+#[tokio::test]
+async fn password_change_verification_rejects_another_accounts_login_state() {
+    let Some(app) = test_app().await else { return };
+    let alice = registered_account(&app).await;
+    let bob = registered_account_named(&app, "bob", "bob@example.test").await;
+    let bob_auth = app.auth_token(&bob.id.to_string());
+    let request = test_registration_start(b"replacement").unwrap();
+    let (token, proof) = start_password_change(&app, &alice).await;
+    let (status, body) = post_json(&app, "/v1/accounts/password/change/verify", Some(&bob_auth),
+        &json!({"login_token": token, "opaque_ke3": B64.encode(proof), "opaque_request": B64.encode(&request)})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_credentials_unchanged(&app, &alice).await;
+    assert_credentials_unchanged(&app, &bob).await;
+    // Control: the owner can verify a fresh exchange with the same inputs.
+    let (token, proof) = start_password_change(&app, &alice).await;
+    let alice_auth = app.auth_token(&alice.id.to_string());
+    let (status, body) = post_json(&app, "/v1/accounts/password/change/verify", Some(&alice_auth),
+        &json!({"login_token": token, "opaque_ke3": B64.encode(proof), "opaque_request": B64.encode(request)})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn password_change_completion_rejects_another_accounts_registration_state() {
+    let Some(app) = test_app().await else { return };
+    let alice = registered_account(&app).await;
+    let bob = registered_account_named(&app, "bob", "bob@example.test").await;
+    let bob_auth = app.auth_token(&bob.id.to_string());
+    let upload =
+        test_registration_upload(&app.opaque, b"replacement", alice.id.as_bytes()).unwrap();
+    for (auth, expected) in [
+        (&bob_auth, StatusCode::FORBIDDEN),
+        (&app.auth_token(&alice.id.to_string()), StatusCode::OK),
+    ] {
+        let (token, proof) = start_password_change(&app, &alice).await;
+        let request = test_registration_start(b"replacement").unwrap();
+        let alice_auth = app.auth_token(&alice.id.to_string());
+        let (status, verified) = post_json(&app, "/v1/accounts/password/change/verify", Some(&alice_auth),
+            &json!({"login_token": token, "opaque_ke3": B64.encode(proof), "opaque_request": B64.encode(request)})).await;
+        assert_eq!(status, StatusCode::OK, "{verified}");
+        let (status, body) = post_json(&app, "/v1/accounts/password/change/complete", Some(auth),
+            &json!({"state_token": verified["state_token"], "opaque_record": B64.encode(&upload), "wrapped_root_key": B64.encode([2; 41])})).await;
+        assert_eq!(status, expected, "{body}");
+        assert_credentials_unchanged(&app, &bob).await;
+        if expected == StatusCode::FORBIDDEN {
+            assert_credentials_unchanged(&app, &alice).await;
+        } else {
+            let changed = app.storage.get_account_by_id(alice.id).await.unwrap();
+            assert_eq!(changed.credentials_version, 1);
+            assert_eq!(changed.wrapped_root_key, Some(vec![2; 41]));
+            assert_eq!(
+                get_json(&app, "/v1/auth/validate", body["auth_token"].as_str())
+                    .await
+                    .0,
+                StatusCode::OK
+            );
+        }
+    }
 }
 
 async fn registration_state(
@@ -462,7 +551,7 @@ fn oauth_access_token(app: &TestApp, account_id: &str, client_id: &str) -> Strin
         .create_oauth_access_token(OAuthAccessClaims {
             sub: account_id.to_string(),
             iss: TEST_ISSUER.to_string(),
-            aud: vec![TEST_ISSUER.to_string()],
+            aud: vec![client_id.to_string()],
             iat: now.timestamp(),
             exp: (now + chrono::Duration::minutes(10)).timestamp(),
             client_id: client_id.to_string(),

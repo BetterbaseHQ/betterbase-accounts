@@ -1,6 +1,6 @@
 //! API request and response types.
 //!
-//! All types use `serde` for JSON serialization. Mirrors Go `protocol/types.go`.
+//! All types use `serde` for JSON serialization.
 
 use serde::{Deserialize, Serialize};
 
@@ -330,7 +330,7 @@ pub struct OAuthUserInfoResponse {
 /// `GET /oauth/grant-keypair` response
 #[derive(Debug, Serialize)]
 pub struct GrantKeypairResponse {
-    /// Always emitted (empty string when absent), matching Go's no-omitempty field.
+    /// Always emitted, using an empty string when absent.
     pub app_keypair_blob: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wrapped_scoped_key: Option<String>,

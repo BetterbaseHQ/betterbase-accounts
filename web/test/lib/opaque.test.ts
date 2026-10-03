@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import * as opaque from "@serenity-kit/opaque";
 import { startRegistration, finishRegistration, startLogin, finishLogin } from "@/lib/opaque";
 
-// Must match Go server's ServerIdentity
+// Must match SERVER_ID in crates/auth/src/opaque.rs.
 const SERVER_IDENTITY = "betterbase-accounts";
 
 describe("opaque", () => {
@@ -44,7 +44,7 @@ describe("opaque", () => {
       expect(registrationRequest).toBeTruthy();
 
       // Step 2: Server generates registration response
-      // (Simulating what the Go server does - no identifiers)
+      // Use the library server to exercise the browser protocol adapter.
       const serverRegResponse = opaque.server.createRegistrationResponse({
         serverSetup,
         registrationRequest: toBase64url(registrationRequest),
@@ -72,7 +72,7 @@ describe("opaque", () => {
       expect(ke1).toBeTruthy();
 
       // Step 5: Server generates login response (KE2)
-      // Server uses ServerIdentity during login (matching Go server's SetKeyMaterial)
+      // Bind the key exchange to the same server identity as the client.
       const serverLoginResponse = opaque.server.startLogin({
         serverSetup,
         registrationRecord: toBase64url(storedRecord),

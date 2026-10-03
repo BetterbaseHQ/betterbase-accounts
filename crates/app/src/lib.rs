@@ -60,57 +60,60 @@ pub struct AppConfig {
 
 impl AppConfig {
     pub fn from_env() -> Result<Self> {
+        Self::from_lookup(|name| std::env::var(name))
+    }
+
+    // Inject the environment reader so tests never mutate process-global state.
+    fn from_lookup(get: impl Fn(&str) -> Result<String, std::env::VarError>) -> Result<Self> {
+        let required = |name: &str| -> Result<String> {
+            let value = get(name)
+                .with_context(|| format!("missing required environment variable: {name}"))?;
+            anyhow::ensure!(!value.trim().is_empty(), "{name} must not be empty");
+            Ok(value)
+        };
         let config = AppConfig {
-            database_url: require_env("DATABASE_URL")?,
-            opaque_server_setup: require_env("OPAQUE_SERVER_SETUP")?,
-            oauth_issuer: require_env("OAUTH_ISSUER")?,
-            accounts_public_url: match std::env::var("ACCOUNTS_PUBLIC_URL") {
+            database_url: required("DATABASE_URL")?,
+            opaque_server_setup: required("OPAQUE_SERVER_SETUP")?,
+            oauth_issuer: required("OAUTH_ISSUER")?,
+            accounts_public_url: match get("ACCOUNTS_PUBLIC_URL") {
                 Ok(raw) => Some(Self::normalize_public_url(&raw)?),
                 Err(std::env::VarError::NotUnicode(_)) => {
                     anyhow::bail!("ACCOUNTS_PUBLIC_URL is not valid UTF-8")
                 }
                 Err(_) => None,
             },
-            identity_hash_key: require_env("IDENTITY_HASH_KEY")?,
-            listen_addr: std::env::var("LISTEN_ADDR")
-                .unwrap_or_else(|_| "0.0.0.0:5377".to_string()),
-            sync_endpoint: std::env::var("SYNC_ENDPOINT").ok(),
-            federation_ws_endpoint: std::env::var("FEDERATION_WS_ENDPOINT").ok(),
-            web_base_url: std::env::var("WEB_BASE_URL").unwrap_or_default(),
-            log_format: std::env::var("LOG_FORMAT").unwrap_or_else(|_| "text".to_string()),
+            identity_hash_key: required("IDENTITY_HASH_KEY")?,
+            listen_addr: get("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:5377".to_string()),
+            sync_endpoint: get("SYNC_ENDPOINT").ok(),
+            federation_ws_endpoint: get("FEDERATION_WS_ENDPOINT").ok(),
+            web_base_url: get("WEB_BASE_URL").unwrap_or_default(),
+            log_format: get("LOG_FORMAT").unwrap_or_else(|_| "text".to_string()),
 
-            cap_enabled: std::env::var("CAP_KEY_ID")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .is_some(),
-            cap_key_id: std::env::var("CAP_KEY_ID").unwrap_or_default(),
-            cap_secret: std::env::var("CAP_SECRET").unwrap_or_default(),
-            cap_verify_url: std::env::var("CAP_VERIFY_URL")
-                .unwrap_or_else(|_| "http://cap:3000".to_string()),
+            cap_enabled: get("CAP_KEY_ID").ok().filter(|s| !s.is_empty()).is_some(),
+            cap_key_id: get("CAP_KEY_ID").unwrap_or_default(),
+            cap_secret: get("CAP_SECRET").unwrap_or_default(),
+            cap_verify_url: get("CAP_VERIFY_URL").unwrap_or_else(|_| "http://cap:3000".to_string()),
 
-            smtp_dev_mode: std::env::var("SMTP_DEV_MODE")
+            smtp_dev_mode: get("SMTP_DEV_MODE")
                 .map(|v| v == "true" || v == "1")
                 .unwrap_or(false),
-            smtp_host: std::env::var("SMTP_HOST").unwrap_or_default(),
-            smtp_port: std::env::var("SMTP_PORT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(587),
-            smtp_username: std::env::var("SMTP_USERNAME").unwrap_or_default(),
-            smtp_password: std::env::var("SMTP_PASSWORD").unwrap_or_default(),
-            smtp_from: std::env::var("SMTP_FROM")
-                .unwrap_or_else(|_| "noreply@betterbase.dev".to_string()),
+            smtp_host: get("SMTP_HOST").unwrap_or_default(),
+            smtp_port: match get("SMTP_PORT") {
+                Ok(value) => value
+                    .parse()
+                    .context("SMTP_PORT must be an integer from 1 to 65535")?,
+                Err(std::env::VarError::NotPresent) => 587,
+                Err(_) => anyhow::bail!("SMTP_PORT is not valid UTF-8"),
+            },
+            smtp_username: get("SMTP_USERNAME").unwrap_or_default(),
+            smtp_password: get("SMTP_PASSWORD").unwrap_or_default(),
+            smtp_from: get("SMTP_FROM").unwrap_or_else(|_| "noreply@betterbase.dev".to_string()),
         };
 
         config.validate()?;
         Ok(config)
     }
 
-    /// Fail fast on configurations that would otherwise break at runtime.
-    ///
-    /// An empty SMTP host in SMTP mode is exactly such a case: the mailer
-    /// constructs fine and every outgoing email (verification, recovery)
-    /// fails at send time with no startup signal (AUD-056).
     /// Normalizes ACCOUNTS_PUBLIC_URL into the canonical form discovery
     /// joins `/.well-known/*` paths onto: the parsed serialization (lowercase
     /// scheme/host, no empty port, no surrounding whitespace) without the
@@ -143,7 +146,40 @@ impl AppConfig {
             .to_string())
     }
 
+    /// Reject invalid configuration before startup performs database writes.
     fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.database_url.trim().is_empty(),
+            "DATABASE_URL must not be empty"
+        );
+        OpaqueService::from_hex(&self.opaque_server_setup)
+            .context("invalid OPAQUE_SERVER_SETUP")?;
+        let key = hex::decode(&self.identity_hash_key).context("IDENTITY_HASH_KEY must be hex")?;
+        anyhow::ensure!(key.len() == 32, "IDENTITY_HASH_KEY must be 32 bytes");
+        self.listen_addr
+            .parse::<SocketAddr>()
+            .context("invalid LISTEN_ADDR")?;
+        validate_http_url(&self.oauth_issuer, "OAUTH_ISSUER")?;
+        // When discovery defaults to the issuer, it needs a bare service base.
+        if self.accounts_public_url.is_none() {
+            Self::normalize_public_url(&self.oauth_issuer)
+                .context("OAUTH_ISSUER with a path requires ACCOUNTS_PUBLIC_URL")?;
+        }
+        if self.cap_enabled {
+            anyhow::ensure!(
+                !self.cap_key_id.trim().is_empty(),
+                "CAP_KEY_ID is required when CAP is enabled"
+            );
+            anyhow::ensure!(
+                !self.cap_secret.trim().is_empty(),
+                "CAP_SECRET is required when CAP is enabled"
+            );
+            validate_http_url(&self.cap_verify_url, "CAP_VERIFY_URL")?;
+        }
+        anyhow::ensure!(
+            self.smtp_port != 0,
+            "SMTP_PORT must be an integer from 1 to 65535"
+        );
         if let Some(url) = self.accounts_public_url.as_deref() {
             let canonical = Self::normalize_public_url(url)?;
             if canonical != url {
@@ -167,6 +203,24 @@ impl AppConfig {
 
 /// Run the server: boot all services, start background tasks, serve HTTP.
 pub async fn run(config: AppConfig) -> Result<()> {
+    run_until(config, shutdown_signal()).await
+}
+
+async fn run_until(
+    config: AppConfig,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    let (router, storage) = build_app(&config).await?;
+    let addr: SocketAddr = config.listen_addr.parse().context("invalid LISTEN_ADDR")?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .context("failed to bind")?;
+    info!("listening on {}", listener.local_addr()?);
+    serve_with_cleanup(listener, router, storage, shutdown).await
+}
+
+async fn build_app(config: &AppConfig) -> Result<(axum::Router, Arc<PostgresStorage>)> {
+    config.validate()?;
     // Connect to database and run migrations
     info!("connecting to database");
     let storage = PostgresStorage::connect_and_migrate(&config.database_url)
@@ -287,59 +341,62 @@ pub async fn run(config: AppConfig) -> Result<()> {
     // Build router
     let router = betterbase_accounts_api::build_router(app_state);
 
-    // Background cleanup loop (every 60 seconds)
-    let cleanup_storage = storage.clone();
-    tokio::spawn(async move {
+    Ok((router, storage))
+}
+
+async fn cleanup_once(storage: &dyn CleanupStorage) {
+    if let Err(e) = storage.cleanup_expired_states().await {
+        tracing::warn!("cleanup_expired_states error: {e}");
+    }
+    if let Err(e) = storage.cleanup_expired_oauth_codes().await {
+        tracing::warn!("cleanup_expired_oauth_codes error: {e}");
+    }
+    if let Err(e) = storage.cleanup_expired_refresh_tokens().await {
+        tracing::warn!("cleanup_expired_refresh_tokens error: {e}");
+    }
+    if let Err(e) = storage
+        .cleanup_used_refresh_tokens(Duration::from_secs(7 * 24 * 3600))
+        .await
+    {
+        tracing::warn!("cleanup_used_refresh_tokens error: {e}");
+    }
+    if let Err(e) = storage.cleanup_expired_verification_codes().await {
+        tracing::warn!("cleanup_expired_verification_codes error: {e}");
+    }
+    if let Err(e) = storage.cleanup_expired_verification_tokens().await {
+        tracing::warn!("cleanup_expired_verification_tokens error: {e}");
+    }
+    // Abandoned reservations must not permanently squat usernames/emails.
+    if let Err(e) = storage
+        .cleanup_unregistered_accounts(Duration::from_secs(7 * 24 * 3600))
+        .await
+    {
+        tracing::warn!("cleanup_unregistered_accounts error: {e}");
+    }
+}
+
+async fn serve_with_cleanup(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    storage: Arc<dyn CleanupStorage>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    // JoinSet aborts its tasks if this future is cancelled as well as on normal
+    // shutdown. Binding happens first, so a bind failure cannot leak a worker.
+    let mut workers = tokio::task::JoinSet::new();
+    workers.spawn(async move {
         let mut interval = time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            if let Err(e) = cleanup_storage.cleanup_expired_states().await {
-                tracing::warn!("cleanup_expired_states error: {e}");
-            }
-            if let Err(e) = cleanup_storage.cleanup_expired_oauth_codes().await {
-                tracing::warn!("cleanup_expired_oauth_codes error: {e}");
-            }
-            if let Err(e) = cleanup_storage.cleanup_expired_refresh_tokens().await {
-                tracing::warn!("cleanup_expired_refresh_tokens error: {e}");
-            }
-            if let Err(e) = cleanup_storage
-                .cleanup_used_refresh_tokens(Duration::from_secs(7 * 24 * 3600))
-                .await
-            {
-                tracing::warn!("cleanup_used_refresh_tokens error: {e}");
-            }
-            if let Err(e) = cleanup_storage.cleanup_expired_verification_codes().await {
-                tracing::warn!("cleanup_expired_verification_codes error: {e}");
-            }
-            if let Err(e) = cleanup_storage.cleanup_expired_verification_tokens().await {
-                tracing::warn!("cleanup_expired_verification_tokens error: {e}");
-            }
-            // Reclaim account reservations that never completed signup (kept
-            // for a week — far longer than the signup funnel — so abandoned
-            // inits cannot permanently squat usernames/emails).
-            if let Err(e) = cleanup_storage
-                .cleanup_unregistered_accounts(Duration::from_secs(7 * 24 * 3600))
-                .await
-            {
-                tracing::warn!("cleanup_unregistered_accounts error: {e}");
-            }
+            cleanup_once(storage.as_ref()).await;
         }
     });
-
-    // Start HTTP server
-    let addr: SocketAddr = config.listen_addr.parse().context("invalid LISTEN_ADDR")?;
-    info!("listening on {addr}");
-
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .context("failed to bind")?;
-
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server error")?;
-
-    Ok(())
+    let result = axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown)
+        .await;
+    workers.abort_all();
+    while workers.join_next().await.is_some() {}
+    result.context("server error")
 }
 
 async fn shutdown_signal() {
@@ -368,127 +425,26 @@ fn extract_domain(issuer: &str) -> &str {
     s.split('/').next().unwrap_or(s)
 }
 
-fn require_env(key: &str) -> Result<String> {
-    std::env::var(key).with_context(|| format!("missing required environment variable: {key}"))
+fn validate_http_url(raw: &str, name: &str) -> Result<()> {
+    let url = url::Url::parse(raw).with_context(|| format!("invalid {name}"))?;
+    anyhow::ensure!(
+        matches!(url.scheme(), "http" | "https")
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "{name} must be an HTTP(S) URL without userinfo, query, or fragment"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "lib_tests.rs"]
+mod tests;
 
-    fn test_config() -> AppConfig {
-        AppConfig {
-            database_url: "postgres://test".to_string(),
-            opaque_server_setup: "00".to_string(),
-            oauth_issuer: "https://accounts.test".to_string(),
-            accounts_public_url: None,
-            identity_hash_key: "aa".repeat(32),
-            listen_addr: "127.0.0.1:5377".to_string(),
-            sync_endpoint: None,
-            federation_ws_endpoint: None,
-            web_base_url: String::new(),
-            log_format: "text".to_string(),
-            cap_enabled: false,
-            cap_key_id: String::new(),
-            cap_secret: String::new(),
-            cap_verify_url: "http://cap:3000".to_string(),
-            smtp_dev_mode: true,
-            smtp_host: String::new(),
-            smtp_port: 587,
-            smtp_username: String::new(),
-            smtp_password: String::new(),
-            smtp_from: "noreply@test".to_string(),
-        }
-    }
+#[cfg(test)]
+mod config_tests;
 
-    #[test]
-    fn smtp_mode_requires_host() {
-        let mut config = test_config();
-        config.smtp_dev_mode = false;
-        config.smtp_host = String::new();
-        let err = config.validate().unwrap_err().to_string();
-        assert!(err.contains("SMTP_HOST"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn smtp_mode_accepts_host() {
-        let mut config = test_config();
-        config.smtp_dev_mode = false;
-        config.smtp_host = "smtp.example.com".to_string();
-        config.validate().expect("host set in SMTP mode is valid");
-    }
-
-    #[test]
-    fn dev_mailer_mode_allows_empty_host() {
-        let mut config = test_config();
-        config.smtp_dev_mode = true;
-        config.smtp_host = String::new();
-        config.validate().expect("dev mailer needs no host");
-    }
-
-    #[test]
-    fn accounts_public_url_defaults_to_unset_and_validates_shape() {
-        let mut config = test_config();
-        config
-            .validate()
-            .expect("unset ACCOUNTS_PUBLIC_URL (issuer-hosted) is valid");
-
-        config.accounts_public_url = Some("https://accounts.test".to_string());
-        config.validate().expect("bare base URL is valid");
-
-        for bad in [
-            "",
-            "accounts.test",
-            "https://accounts.test/v1",
-            "https://accounts.test/?x=1",
-            "https://accounts.test#f",
-            "https://u:p@accounts.test",
-            "https://@accounts.test",
-            "file://accounts.test",
-            // valid shapes that must pass through from_env normalization
-            // before reaching AppConfig, never be stored raw
-            "https://accounts.test/",
-            " https://accounts.test ",
-            "HTTPS://ACCOUNTS.TEST",
-            "https://accounts.test:",
-        ] {
-            config.accounts_public_url = Some(bad.to_string());
-            let err = config.validate().unwrap_err().to_string();
-            assert!(
-                err.contains("ACCOUNTS_PUBLIC_URL"),
-                "unexpected error for {bad:?}: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn accounts_public_url_env_values_are_normalized() {
-        assert_eq!(
-            AppConfig::normalize_public_url("https://accounts.test").unwrap(),
-            "https://accounts.test"
-        );
-        // trailing slash, padding, mixed case, and empty port all canonicalize
-        assert_eq!(
-            AppConfig::normalize_public_url(" https://Accounts.Test/ ").unwrap(),
-            "https://accounts.test"
-        );
-        assert_eq!(
-            AppConfig::normalize_public_url("https://accounts.test:").unwrap(),
-            "https://accounts.test"
-        );
-        for bad in [
-            "",
-            "accounts.test",
-            "https://accounts.test/v1",
-            "https://accounts.test?q",
-            "https://accounts.test#f",
-            "https://u:p@accounts.test",
-            "file://accounts.test",
-        ] {
-            assert!(
-                AppConfig::normalize_public_url(bad).is_err(),
-                "expected rejection: {bad:?}"
-            );
-        }
-    }
-}
+#[cfg(test)]
+mod lifecycle_tests;

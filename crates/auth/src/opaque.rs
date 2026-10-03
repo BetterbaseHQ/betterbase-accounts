@@ -1,7 +1,6 @@
 //! OPAQUE password authentication using `opaque-ke` v4 (Ristretto255 cipher suite).
 //!
-//! Matches the Go server's behavior while using a completely different (incompatible)
-//! wire format. Existing Go-server registrations cannot be used here.
+//! Registration records and protocol messages use the `opaque-ke` wire format.
 
 use opaque_ke::{
     ksf::Identity, rand::rngs::OsRng, CipherSuite, CredentialFinalization, CredentialRequest,
@@ -186,209 +185,19 @@ impl OpaqueService {
     }
 }
 
-/// Client-side OPAQUE registration start for integration tests
-/// (`test-support` feature): returns the KE1 bytes that recover/init and
-/// registration endpoints expect in `opaque_request`.
 #[cfg(feature = "test-support")]
-pub fn test_registration_start(password: &[u8]) -> Result<Vec<u8>, OpaqueError> {
-    use opaque_ke::ClientRegistration;
-    let mut rng = OsRng;
-    let client_start = ClientRegistration::<DefaultCipherSuite>::start(&mut rng, password)
-        .map_err(|_| OpaqueError::InvalidKE1)?;
-    Ok(client_start.message.serialize().to_vec())
-}
-
-/// In-process OPAQUE client registration for integration tests
-/// (`test-support` feature): runs a full client round against this
-/// service and returns the registration upload bytes that the API's
-/// finalize endpoints expect in `opaque_record`.
-#[cfg(feature = "test-support")]
-pub fn test_registration_upload(
-    service: &OpaqueService,
-    password: &[u8],
-    credential_id: &[u8],
-) -> Result<Vec<u8>, OpaqueError> {
-    use opaque_ke::{ClientRegistration, ClientRegistrationFinishParameters, RegistrationResponse};
-    let mut rng = OsRng;
-
-    let client_start = ClientRegistration::<DefaultCipherSuite>::start(&mut rng, password)
-        .map_err(|_| OpaqueError::InvalidKE1)?;
-    let ke1_bytes = client_start.message.serialize().to_vec();
-    let server_start = service.registration_start(&ke1_bytes, credential_id)?;
-    let server_response =
-        RegistrationResponse::<DefaultCipherSuite>::deserialize(&server_start.response)
-            .map_err(|_| OpaqueError::InvalidRequest)?;
-    let client_finish = client_start
-        .state
-        .finish(
-            &mut rng,
-            password,
-            server_response,
-            ClientRegistrationFinishParameters {
-                identifiers: Identifiers {
-                    server: Some(SERVER_ID),
-                    client: None,
-                },
-                ksf: None,
-            },
-        )
-        .map_err(|_| OpaqueError::InvalidKE3)?;
-    Ok(client_finish.message.serialize().to_vec())
-}
-
-/// Stateful OPAQUE client for route-level login and password-change tests.
-#[cfg(feature = "test-support")]
-pub struct TestLogin(opaque_ke::ClientLogin<DefaultCipherSuite>);
+#[path = "opaque_test_support.rs"]
+mod test_support;
 
 #[cfg(feature = "test-support")]
-impl TestLogin {
-    pub fn start(password: &[u8]) -> (Self, Vec<u8>) {
-        let started = opaque_ke::ClientLogin::start(&mut OsRng, password).expect("start login");
-        (Self(started.state), started.message.serialize().to_vec())
-    }
-
-    pub fn finish(self, password: &[u8], ke2: &[u8]) -> Vec<u8> {
-        let response = opaque_ke::CredentialResponse::deserialize(ke2).expect("decode KE2");
-        self.0
-            .finish(
-                &mut OsRng,
-                password,
-                response,
-                opaque_ke::ClientLoginFinishParameters {
-                    identifiers: Identifiers {
-                        server: Some(SERVER_ID),
-                        client: None,
-                    },
-                    context: None,
-                    ksf: None,
-                },
-            )
-            .expect("finish login")
-            .message
-            .serialize()
-            .to_vec()
-    }
-}
+pub use test_support::{
+    test_registration_start, test_registration_upload, TestLogin, TestRegistration,
+};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use opaque_ke::{
-        ClientLogin, ClientLoginFinishParameters, ClientRegistration,
-        ClientRegistrationFinishParameters, CredentialResponse, Identifiers, RegistrationResponse,
-    };
+#[path = "opaque_property_tests.rs"]
+mod property_tests;
 
-    /// Helper: run a full OPAQUE registration round-trip in-process.
-    fn full_registration(
-        service: &OpaqueService,
-        password: &[u8],
-        credential_id: &[u8],
-    ) -> Vec<u8> {
-        let mut rng = OsRng;
-
-        // Client registration start
-        let client_start =
-            ClientRegistration::<DefaultCipherSuite>::start(&mut rng, password).unwrap();
-        let ke1_bytes = client_start.message.serialize().to_vec();
-
-        // Server registration start
-        let server_start = service
-            .registration_start(&ke1_bytes, credential_id)
-            .unwrap();
-
-        // Client registration finish
-        let server_response =
-            RegistrationResponse::<DefaultCipherSuite>::deserialize(&server_start.response)
-                .unwrap();
-        // Use SERVER_ID so the envelope is sealed with the same identifiers used at login.
-        let client_finish = client_start
-            .state
-            .finish(
-                &mut rng,
-                password,
-                server_response,
-                ClientRegistrationFinishParameters {
-                    identifiers: Identifiers {
-                        server: Some(SERVER_ID),
-                        client: None,
-                    },
-                    ksf: None,
-                },
-            )
-            .unwrap();
-        let upload_bytes = client_finish.message.serialize().to_vec();
-
-        // Server registration finish
-        service.registration_finish(&upload_bytes).unwrap()
-    }
-
-    #[test]
-    fn registration_round_trip() {
-        let hex = OpaqueService::generate_server_setup_hex();
-        let service = OpaqueService::from_hex(&hex).unwrap();
-        let record = full_registration(&service, b"hunter2", b"test-user-id");
-        assert!(!record.is_empty());
-    }
-
-    #[test]
-    fn login_round_trip() {
-        let hex = OpaqueService::generate_server_setup_hex();
-        let service = OpaqueService::from_hex(&hex).unwrap();
-        let credential_id = b"test-user-id";
-        let password = b"hunter2";
-
-        let record = full_registration(&service, password, credential_id);
-
-        let mut rng = OsRng;
-
-        // Client login start
-        let client_login_start =
-            ClientLogin::<DefaultCipherSuite>::start(&mut rng, password).unwrap();
-        let ke1_bytes = client_login_start.message.serialize().to_vec();
-
-        // Server login start
-        let server_result = service
-            .login_start(&ke1_bytes, Some(&record), credential_id)
-            .unwrap();
-
-        // Client login finish
-        let ke2 =
-            CredentialResponse::<DefaultCipherSuite>::deserialize(&server_result.ke2).unwrap();
-        let client_finish = client_login_start
-            .state
-            .finish(
-                &mut rng,
-                password,
-                ke2,
-                ClientLoginFinishParameters {
-                    identifiers: Identifiers {
-                        server: Some(SERVER_ID),
-                        client: None,
-                    },
-                    context: None,
-                    ksf: None,
-                },
-            )
-            .unwrap();
-        let ke3_bytes = client_finish.message.serialize().to_vec();
-
-        // Server login finish
-        service
-            .login_finish(&ke3_bytes, &server_result.server_state)
-            .unwrap();
-    }
-
-    #[test]
-    fn fake_login_does_not_panic() {
-        let hex = OpaqueService::generate_server_setup_hex();
-        let service = OpaqueService::from_hex(&hex).unwrap();
-        let mut rng = OsRng;
-
-        let client_start = ClientLogin::<DefaultCipherSuite>::start(&mut rng, b"pass").unwrap();
-        let ke1_bytes = client_start.message.serialize().to_vec();
-
-        // None = fake login
-        let result = service.login_start(&ke1_bytes, None, b"nonexistent-user");
-        assert!(result.is_ok());
-    }
-}
+#[cfg(test)]
+#[path = "opaque_tests.rs"]
+mod tests;

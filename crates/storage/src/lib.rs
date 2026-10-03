@@ -38,6 +38,10 @@ pub enum StorageError {
     OAuthCodeExpired,
     #[error("OAuth grant not found")]
     OAuthGrantNotFound,
+    #[error("mailbox_id conflict")]
+    MailboxConflict,
+    #[error("grant key material changed")]
+    GrantKeyConflict,
     #[error("refresh token not found")]
     RefreshTokenNotFound,
     #[error("refresh token expired")]
@@ -416,9 +420,10 @@ pub trait OAuthGrantStorage: Send + Sync {
         blob: &str,
         expected_root_version: i64,
     ) -> Result<ConsentKeyInstall, StorageError>;
-    /// Updates the wrapped scoped key only if the account's current root
-    /// key version matches `expected_root_version`.
-    /// Returns `StorageError::VersionConflict` on a stale root.
+    /// Initializes an absent or empty wrapped scoped key only if the account's
+    /// root version matches `expected_root_version`. Identical retries succeed;
+    /// replacing an existing wrapper returns `StorageError::GrantKeyConflict`.
+    /// Returns `StorageError::RootKeyVersionConflict` on a stale root.
     async fn update_grant_wrapped_scoped_key_root_checked(
         &self,
         grant_id: Uuid,
@@ -431,18 +436,24 @@ pub trait OAuthGrantStorage: Send + Sync {
         grant_id: Uuid,
         wrapped_scoped_key: &[u8],
     ) -> Result<(), StorageError>;
-    /// First-write-wins: does nothing if already set.
+    /// First-write-wins for an existing grant bound to this account and client.
+    /// Returns MailboxConflict if another grant already owns the mailbox ID.
     async fn update_grant_mailbox_id(
         &self,
         grant_id: Uuid,
+        account_id: Uuid,
+        client_id: Uuid,
         mailbox_id: &str,
     ) -> Result<(), StorageError>;
     async fn list_grants_for_account(
         &self,
         account_id: Uuid,
     ) -> Result<Vec<OAuthGrant>, StorageError>;
+    /// Atomically checks ownership and root version before updating any wrappers.
     async fn batch_update_grant_wrapped_keys(
         &self,
+        account_id: Uuid,
+        expected_root_version: i64,
         updates: &[GrantKeyUpdate],
     ) -> Result<(), StorageError>;
 }

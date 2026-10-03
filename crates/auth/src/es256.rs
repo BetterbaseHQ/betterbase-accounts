@@ -1,6 +1,4 @@
 //! ES256 key management: P-256 keypair generation, JWKS output.
-//!
-//! Mirrors Go server `services/es256.go`.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
 use p256::{
@@ -151,40 +149,5 @@ pub fn jwk_thumbprint(jwk: &serde_json::Value) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn generate_and_encode() {
-        let (priv_der, pub_der) = generate_keypair().unwrap();
-        assert!(!priv_der.is_empty());
-        assert!(!pub_der.is_empty());
-    }
-
-    #[test]
-    fn jwk_from_spki_der() {
-        let (_, pub_der) = generate_keypair().unwrap();
-        let jwk = Jwk::from_spki_der(1, &pub_der).unwrap();
-        assert_eq!(jwk.kty, "EC");
-        assert_eq!(jwk.crv, "P-256");
-        assert!(!jwk.x.is_empty());
-        assert!(!jwk.y.is_empty());
-    }
-
-    #[test]
-    fn jwks_from_keys() {
-        let (_, pub_der) = generate_keypair().unwrap();
-        let jwks = Jwks::from_signing_keys(&[(1, pub_der)]).unwrap();
-        assert_eq!(jwks.keys.len(), 1);
-    }
-
-    #[test]
-    fn thumbprint_is_deterministic() {
-        let (_, pub_der) = generate_keypair().unwrap();
-        let jwk_val = Jwk::from_spki_der(1, &pub_der).unwrap().to_json_value();
-        let tp1 = jwk_thumbprint(&jwk_val).unwrap();
-        let tp2 = jwk_thumbprint(&jwk_val).unwrap();
-        assert_eq!(tp1, tp2);
-        assert!(!tp1.is_empty());
-    }
-}
+#[path = "es256_tests.rs"]
+mod tests;

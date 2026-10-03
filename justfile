@@ -17,6 +17,22 @@ lint:
 test *args:
     cargo test --workspace {{args}}
 
+# Generated security-input tests; no database or external E2E suite required.
+test-properties:
+    SQLX_OFFLINE=true cargo test --workspace property_tests
+
+# Deliberately disable selected security guards in a temporary source copy.
+test-mutations *args:
+    python3 scripts/test-security-mutations.py {{args}}
+
+# Enforce mutation detection with disposable PostgreSQL; keep DB on failure.
+test-mutations-db *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just db-start
+    DATABASE_URL="{{_db_url}}" just test-mutations {{args}}
+    just db-down
+
 # Run tests with verbose output
 test-v *args:
     cargo test --workspace {{args}} -- --nocapture
@@ -98,3 +114,27 @@ test-db *args:
 # PostgreSQL shell for the test database (must be running)
 db-shell:
     docker exec -it {{_db_container}} psql -U {{_db_user}} -d {{_db_name}}
+
+# Install the pinned Rust coverage tool and compiler-matched LLVM tools.
+coverage-setup:
+    rustup component add llvm-tools-preview
+    cargo install cargo-llvm-cov --version 0.9.1 --locked
+
+# Measure all Rust targets against an existing DATABASE_URL and enforce floors.
+coverage-rust:
+    bash scripts/coverage-rust.sh
+
+# Web coverage, including untouched source files, with threshold enforcement.
+coverage-web:
+    cd web && pnpm test:coverage
+
+# Both coverage reports; DATABASE_URL must point to a test database.
+coverage: coverage-rust coverage-web
+
+# Full coverage using disposable PostgreSQL; retained on failure for debugging.
+coverage-db:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just db-start
+    DATABASE_URL="{{_db_url}}" just coverage
+    just db-down

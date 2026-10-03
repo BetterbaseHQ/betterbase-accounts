@@ -17,6 +17,8 @@ mod user_keys;
 mod verification;
 
 #[cfg(test)]
+mod signing_key_tests;
+#[cfg(test)]
 mod test_support;
 
 use hmac::{Hmac, KeyInit, Mac};
@@ -67,3 +69,10 @@ impl PostgresStorage {
         &self.pool
     }
 }
+
+#[cfg(test)]
+mod cleanup_tests;
+#[cfg(test)]
+mod migration_tests;
+#[cfg(test)]
+mod rotation_tests;

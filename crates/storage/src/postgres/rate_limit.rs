@@ -54,12 +54,14 @@ impl RateLimitStorage for PostgresStorage {
             VALUES ($1, $2, 1, NOW(), 0)
             ON CONFLICT (issuer, username) DO UPDATE
             SET failed_count    = CASE
-                WHEN EXTRACT(EPOCH FROM (NOW() - login_attempts.first_failed_at))::bigint >= $3
+                WHEN login_attempts.first_failed_at IS NULL
+                     OR EXTRACT(EPOCH FROM (NOW() - login_attempts.first_failed_at))::bigint >= $3
                      THEN 1
                 ELSE login_attempts.failed_count + 1
                 END,
                 first_failed_at = CASE
-                WHEN EXTRACT(EPOCH FROM (NOW() - login_attempts.first_failed_at))::bigint >= $3
+                WHEN login_attempts.first_failed_at IS NULL
+                     OR EXTRACT(EPOCH FROM (NOW() - login_attempts.first_failed_at))::bigint >= $3
                      THEN NOW()
                 ELSE login_attempts.first_failed_at
                 END
@@ -74,7 +76,7 @@ impl RateLimitStorage for PostgresStorage {
         .map_err(StorageError::from)?;
 
         if row.failed_count >= max_attempts {
-            // Escalating lockout: 1min, 5min, 15min, 60min, 24h ...
+            // Escalating lockout: 15min, 1h, 24h, 24h ...
             let lockout_secs = lockout_duration_secs(row.lockout_count);
             let lockout_dur = Duration::from_secs(lockout_secs);
             let locked_until = Utc::now() + chrono::Duration::seconds(lockout_secs as i64);
@@ -166,3 +168,7 @@ fn lockout_duration_secs(lockout_count: i32) -> u64 {
         _ => 86400,
     }
 }
+
+#[cfg(test)]
+#[path = "rate_limit_tests.rs"]
+mod tests;

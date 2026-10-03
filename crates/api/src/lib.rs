@@ -12,6 +12,9 @@ mod test_support;
 #[cfg(test)]
 mod credential_flow_tests;
 
+#[cfg(test)]
+mod security_boundary_tests;
+
 use axum::{
     http::{header, HeaderValue, Method},
     middleware,
@@ -172,3 +175,18 @@ async fn set_protocol_version_header(mut resp: Response) -> Response {
 async fn health() -> &'static str {
     "ok"
 }
+
+#[cfg(test)]
+mod verification_delivery_tests;
+
+#[cfg(test)]
+mod discovery_tests;
+
+#[cfg(test)]
+mod account_resource_tests;
+
+#[cfg(test)]
+mod registration_tests;
+
+#[cfg(test)]
+mod recovery_blob_tests;

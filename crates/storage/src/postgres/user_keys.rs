@@ -87,13 +87,23 @@ impl UserKeyStorage for PostgresStorage {
         key_name: &str,
         key_material: &[u8],
     ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+        // Serialize quota checks and writes for this account, including when
+        // there are no existing keys to lock.
+        sqlx::query("SELECT id FROM accounts WHERE id = $1 FOR UPDATE")
+            .bind(account_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(StorageError::from)?
+            .ok_or(StorageError::AccountNotFound)?;
+
         // Check key count for this service (only count distinct names; upsert won't increase count)
         let existing = sqlx::query_scalar!(
             "SELECT COUNT(*) FROM user_keys WHERE account_id = $1 AND service = $2",
             account_id,
             service,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(StorageError::from)?
         .unwrap_or(0);
@@ -105,7 +115,7 @@ impl UserKeyStorage for PostgresStorage {
             service,
             key_name,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(StorageError::from)?
         .unwrap_or(false);
@@ -127,10 +137,15 @@ impl UserKeyStorage for PostgresStorage {
             key_name,
             key_material,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(StorageError::from)?;
 
+        tx.commit().await.map_err(StorageError::from)?;
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "user_keys_tests.rs"]
+mod tests;

@@ -13,10 +13,13 @@ pub enum EmailError {
 }
 
 /// Verification email content.
+#[derive(Clone)]
 pub struct VerificationEmail {
     pub to: String,
     pub code: String,
     pub purpose: String,
+    /// Lifetime of the stored code, used in delivery instructions.
+    pub expires_in: std::time::Duration,
 }
 
 /// Mailer trait — send a verification code email.
@@ -46,16 +49,9 @@ impl SmtpMailer {
     pub fn new(config: SmtpConfig) -> Self {
         Self { config }
     }
-}
 
-#[async_trait]
-impl Mailer for SmtpMailer {
-    async fn send_verification_code(&self, email: &VerificationEmail) -> Result<(), EmailError> {
-        use lettre::{
-            message::header::ContentType, transport::smtp::authentication::Credentials,
-            AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-        };
-
+    fn build_message(&self, email: &VerificationEmail) -> Result<lettre::Message, EmailError> {
+        use lettre::{message::header::ContentType, Message};
         let subject = match email.purpose.as_str() {
             "registration" => "Your Less verification code",
             "recovery" => "Your Less account recovery code",
@@ -63,11 +59,12 @@ impl Mailer for SmtpMailer {
         };
 
         let body = format!(
-            "Your verification code is: {}\n\nThis code expires in 15 minutes.",
-            email.code
+            "Your verification code is: {}\n\nThis code expires in {} minutes.",
+            email.code,
+            email.expires_in.as_secs() / 60
         );
 
-        let message = Message::builder()
+        Message::builder()
             .from(
                 self.config
                     .from
@@ -81,7 +78,19 @@ impl Mailer for SmtpMailer {
             .subject(subject)
             .header(ContentType::TEXT_PLAIN)
             .body(body)
-            .map_err(|e| EmailError::Send(e.to_string()))?;
+            .map_err(|e| EmailError::Send(e.to_string()))
+    }
+}
+
+#[async_trait]
+impl Mailer for SmtpMailer {
+    async fn send_verification_code(&self, email: &VerificationEmail) -> Result<(), EmailError> {
+        use lettre::{
+            transport::smtp::authentication::Credentials, AsyncSmtpTransport, AsyncTransport,
+            Tokio1Executor,
+        };
+
+        let message = self.build_message(email)?;
 
         let creds = Credentials::new(self.config.username.clone(), self.config.password.clone());
 
@@ -108,8 +117,8 @@ pub struct DevMailer;
 #[async_trait]
 impl Mailer for DevMailer {
     async fn send_verification_code(&self, email: &VerificationEmail) -> Result<(), EmailError> {
-        // Print in the same format as the Go server's DevMode so e2e tests
-        // can extract verification codes from Docker container logs.
+        // Keep the preview format stable so e2e tests can extract
+        // verification codes from Docker container logs.
         let subject = match email.purpose.as_str() {
             "recovery" => "Your password reset code",
             _ => "Your verification code",
@@ -119,9 +128,15 @@ impl Mailer for DevMailer {
         println!("Subject: {subject}");
         println!("-----------------------------------");
         println!("Your verification code is: {}", email.code);
-        println!("\nThis code will expire in 10 minutes.");
+        println!(
+            "\nThis code will expire in {} minutes.",
+            email.expires_in.as_secs() / 60
+        );
         println!("\nIf you didn't request this code, you can safely ignore this email.");
         println!("===================================");
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

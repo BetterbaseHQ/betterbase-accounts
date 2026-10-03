@@ -1,6 +1,6 @@
 import * as opaque from "@serenity-kit/opaque";
 
-// Must match ServerIdentity in Go server (services/opaque.go)
+// Must match SERVER_ID in crates/auth/src/opaque.rs.
 const SERVER_IDENTITY = "betterbase-accounts";
 
 let initialized = false;
@@ -12,7 +12,7 @@ async function ensureReady() {
   }
 }
 
-// Convert base64url to standard base64 with padding (Go server expects standard base64)
+// Convert base64url to the padded standard base64 expected by the accounts API.
 function toStdBase64(input: string): string {
   // Replace base64url chars with standard base64 chars
   let result = input.replace(/-/g, "+").replace(/_/g, "/");
@@ -65,7 +65,7 @@ export async function startLogin(password: string) {
   });
   return {
     clientLoginState,
-    // Convert to standard base64 for Go server
+    // Convert to standard base64 for the accounts API.
     ke1: toStdBase64(startLoginRequest),
   };
 }

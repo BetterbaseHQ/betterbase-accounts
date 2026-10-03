@@ -137,6 +137,19 @@ pub async fn handle_oauth_authorize(
         }
     };
 
+    // S256 challenges are unpadded base64url encodings of a SHA-256 digest.
+    if !B64URL
+        .decode(&code_challenge)
+        .is_ok_and(|bytes| bytes.len() == 32)
+    {
+        return oauth_error_redirect(
+            Some(&redirect_uri),
+            Some(&client_state),
+            "invalid_request",
+            "code_challenge must be a base64url-encoded SHA-256 digest",
+        );
+    }
+
     let scope = match q.scope.as_deref() {
         Some(s) if !s.is_empty() => s,
         _ => {
@@ -461,30 +474,28 @@ pub async fn handle_oauth_consent(
             Ok(g) => g,
             Err(e) => return ApiError::from(e).into_response(),
         };
-        if grant.wrapped_scoped_key.is_none() || grant.wrapped_scoped_key.as_deref() == Some(&[]) {
-            if let Err(e) = state
-                .storage
-                .update_grant_wrapped_scoped_key_root_checked(
-                    grant.id,
-                    &key_bytes,
-                    root_key_version,
-                )
-                .await
-            {
-                if matches!(e, StorageError::RootKeyVersionConflict) {
+        if let Err(e) = state
+            .storage
+            .update_grant_wrapped_scoped_key_root_checked(grant.id, &key_bytes, root_key_version)
+            .await
+        {
+            let description = match e {
+                StorageError::RootKeyVersionConflict => {
+                    "root key rotated since the consent page loaded — re-authenticate and retry"
+                }
+                StorageError::GrantKeyConflict => {
+                    "grant key material changed since the consent page loaded — retry consent"
+                }
+                other => {
+                    tracing::error!(error = %other, "failed to persist wrapped scoped key");
                     return write_oauth_error(
-                        StatusCode::CONFLICT,
-                        "invalid_grant_state",
-                        "root key rotated since the consent page loaded — re-authenticate and retry",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "server_error",
+                        "failed to save scoped key",
                     );
                 }
-                tracing::error!(error = %e, "failed to persist wrapped scoped key");
-                return write_oauth_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "server_error",
-                    "failed to save scoped key",
-                );
-            }
+            };
+            return write_oauth_error(StatusCode::CONFLICT, "invalid_grant_state", description);
         }
     }
 
@@ -1134,11 +1145,20 @@ pub async fn handle_register_mailbox(
     let grant_id =
         Uuid::parse_str(&claims.grant_id).map_err(|_| ApiError::unauthorized("invalid token"))?;
 
+    let account_id =
+        Uuid::parse_str(&claims.sub).map_err(|_| ApiError::unauthorized("invalid token"))?;
+    let client_id =
+        Uuid::parse_str(&claims.client_id).map_err(|_| ApiError::unauthorized("invalid token"))?;
+
     // First-write-wins
     state
         .storage
-        .update_grant_mailbox_id(grant_id, &req.mailbox_id)
-        .await?;
+        .update_grant_mailbox_id(grant_id, account_id, client_id, &req.mailbox_id)
+        .await
+        .map_err(|error| match error {
+            StorageError::OAuthGrantNotFound => ApiError::unauthorized("invalid token"),
+            other => ApiError::from(other),
+        })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1159,7 +1179,7 @@ pub async fn handle_grant_keypair(
     let client_id =
         Uuid::parse_str(client_id_str).map_err(|_| ApiError::bad_request("invalid client_id"))?;
 
-    // Return empty blob if no grant exists (first-time consent), matching Go behavior
+    // Return an empty blob if no grant exists (first-time consent).
     let grant = state
         .storage
         .get_oauth_grant_by_account_and_client(auth_ctx.account_id, client_id)
@@ -1294,6 +1314,9 @@ pub async fn handle_user_by_thumbprint(
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn validate_scopes(scope: &str) -> Result<(), String> {
+    if scope.trim().is_empty() {
+        return Err("at least one scope is required".into());
+    }
     for s in scope.split_whitespace() {
         if !OIDC_SCOPES.contains(&s) && !CAPABILITY_SCOPES.contains(&s) {
             return Err(format!("unknown scope: {s}"));
@@ -1543,824 +1566,21 @@ fn write_oauth_error(status: StatusCode, error: &str, description: &str) -> Resp
 }
 
 #[cfg(test)]
-mod consent_tests {
-    use axum::http::StatusCode;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
-    use serde_json::json;
-    use tower::ServiceExt;
-
-    use crate::test_support::{get_json, post_json, test_app, TestApp, TEST_ISSUER};
-
-    use super::*;
-
-    const REDIRECT_URI: &str = "http://localhost:5381/";
-    const REDIRECT_URI_ENC: &str = "http%3A%2F%2Flocalhost%3A5381%2F";
-
-    fn keys_jwk() -> serde_json::Value {
-        json!({
-            "kty": "EC",
-            "crv": "P-256",
-            "x": B64URL.encode([1u8; 32]),
-            "y": B64URL.encode([2u8; 32]),
-        })
-    }
-
-    /// Known-answer vector pinning the RFC 7638 construction shared by the
-    /// server, the browser (`computeJwkThumbprint`), and the SDK. A drift in
-    /// any implementation breaks extended PKCE at runtime only.
-    #[test]
-    fn jwk_thumbprint_matches_the_shared_known_answer() {
-        let jwk = keys_jwk();
-        assert_eq!(
-            jwk_thumbprint_b64(&jwk).expect("thumbprint"),
-            // SHA-256 over {"crv":"P-256","kty":"EC","x":"AQEB...","y":"AgIC..."}
-            "kOFKxjJdOqJD5G4Yuw-cxHe64VGyxKEO_hoV83QfGj0"
-        );
-    }
-
-    #[tokio::test]
-    async fn authorize_redirect_carries_only_the_signed_state_token() {
-        // AUD-005: the consent URL must contain ONLY the signed `oauth`
-        // token — reintroducing unsigned params (client name, keys, scope)
-        // would let them be spoofed on the consent page.
-        let Some(app) = test_app().await else {
-            return;
-        };
-        let client_id = Uuid::new_v4();
-        app.storage
-            .create_oauth_client(&OAuthClient {
-                id: client_id,
-                name: "Spoofable Name".to_owned(),
-                secret_hash: None,
-                redirect_uris: vec![REDIRECT_URI.to_owned()],
-                allowed_scopes: vec!["openid".to_owned(), "sync".to_owned()],
-                created_at: chrono::Utc::now(),
-            })
-            .await
-            .expect("create client");
-
-        let uri = format!(
-            "/oauth/authorize?client_id={client_id}&redirect_uri={REDIRECT_URI_ENC}&response_type=code&scope=openid%20sync&state=client-state&code_challenge=challenge&code_challenge_method=S256"
-        );
-        let request = axum::http::Request::builder()
-            .method("GET")
-            .uri(&uri)
-            .body(axum::body::Body::empty())
-            .expect("build request");
-        let response = app.router.clone().oneshot(request).await.expect("dispatch");
-
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        let location = response
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .expect("location header")
-            .to_owned();
-
-        let (base, query) = location.split_once('?').expect("consent query");
-        assert!(
-            base.ends_with("/consent"),
-            "unexpected consent base: {base}"
-        );
-        let pairs: Vec<(String, String)> = form_urlencoded::parse(query.as_bytes())
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        assert_eq!(
-            pairs.len(),
-            1,
-            "consent redirect must carry exactly one param: {location}"
-        );
-        assert_eq!(pairs[0].0, "oauth");
-        // The token is a signed JWT (three segments), not a passthrough of
-        // any client-supplied value.
-        assert_eq!(pairs[0].1.split('.').count(), 3);
-    }
-
-    #[tokio::test]
-    async fn consent_rejects_partial_key_delivery_pair() {
-        let Some((app, client_id, token)) = app_with_client_and_account().await else {
-            return;
-        };
-        let state = state_token(&app, &client_id, Some(keys_jwk()));
-
-        // thumbprint without keys_jwe
-        let (status, body) = post_json(
-            &app,
-            "/oauth/consent",
-            Some(&token),
-            &json!({
-                "oauth_state": state.clone(),
-                "approved": true,
-                "keys_jwk_thumbprint": "irrelevant",
-            }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            body["error_description"],
-            "keys_jwe and keys_jwk_thumbprint must be supplied together"
-        );
-
-        // keys_jwe without thumbprint
-        let (status, _) = post_json(
-            &app,
-            "/oauth/consent",
-            Some(&token),
-            &json!({
-                "oauth_state": state,
-                "approved": true,
-                "keys_jwe": "some-jwe",
-            }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn consent_requires_key_delivery_for_the_sync_flow() {
-        let Some((app, client_id, token)) = app_with_client_and_account().await else {
-            return;
-        };
-        // The signed state carries a recipient and the sync scope, but the
-        // consent posts no key delivery: a silent downgrade must fail loudly.
-        let state = state_token(&app, &client_id, Some(keys_jwk()));
-
-        let (status, body) = post_json(
-            &app,
-            "/oauth/consent",
-            Some(&token),
-            &json!({
-                "oauth_state": state,
-                "approved": true,
-            }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            body["error_description"],
-            "keys_jwe and keys_jwk_thumbprint must be supplied together"
-        );
-    }
-
-    async fn app_with_client_and_account() -> Option<(TestApp, String, String)> {
-        let app = test_app().await?;
-        let client_id = Uuid::new_v4();
-        app.storage
-            .create_oauth_client(&OAuthClient {
-                id: client_id,
-                name: "Test Client".to_owned(),
-                secret_hash: None,
-                redirect_uris: vec![REDIRECT_URI.to_owned()],
-                allowed_scopes: vec!["openid".to_owned(), "sync".to_owned()],
-                created_at: chrono::Utc::now(),
-            })
-            .await
-            .expect("create client");
-
-        let account = app
-            .storage
-            .get_or_create_account(TEST_ISSUER, "consenter", "consenter@example.test")
-            .await
-            .expect("create account");
-        let token = app.auth_token(&account.id.to_string());
-        Some((app, client_id.to_string(), token))
-    }
-
-    fn state_token(app: &TestApp, client_id: &str, keys_jwk: Option<serde_json::Value>) -> String {
-        app.jwt
-            .create_oauth_state_token(OAuthStateClaims::new(
-                client_id.to_owned(),
-                REDIRECT_URI.to_owned(),
-                "openid sync".to_owned(),
-                "client-state".to_owned(),
-                "challenge".to_owned(),
-                "S256".to_owned(),
-                keys_jwk,
-            ))
-            .expect("state token")
-    }
-
-    #[tokio::test]
-    async fn consent_rejects_thumbprint_that_does_not_match_signed_recipient() {
-        let Some((app, client_id, token)) = app_with_client_and_account().await else {
-            return;
-        };
-        let state = state_token(&app, &client_id, Some(keys_jwk()));
-
-        let (status, body) = post_json(
-            &app,
-            "/oauth/consent",
-            Some(&token),
-            &json!({
-                "oauth_state": state,
-                "approved": true,
-                "keys_jwe": "some-jwe",
-                "keys_jwk_thumbprint": "attacker-chosen-thumbprint",
-            }),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            body["error_description"],
-            "keys_jwk_thumbprint does not match the authorization request"
-        );
-    }
-
-    #[tokio::test]
-    async fn consent_accepts_thumbprint_matching_signed_recipient() {
-        let Some((app, client_id, token)) = app_with_client_and_account().await else {
-            return;
-        };
-        let jwk = keys_jwk();
-        let state = state_token(&app, &client_id, Some(jwk.clone()));
-        let thumbprint = jwk_thumbprint_b64(&jwk).expect("thumbprint");
-
-        let (status, body) = post_json(
-            &app,
-            "/oauth/consent",
-            Some(&token),
-            &json!({
-                "oauth_state": state,
-                "approved": true,
-                "keys_jwe": "some-jwe",
-                "keys_jwk_thumbprint": thumbprint,
-            }),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK, "body: {body}");
-        let redirect = body["redirect_uri"].as_str().expect("redirect");
-        assert!(redirect.starts_with(REDIRECT_URI));
-        assert!(redirect.contains("code="));
-    }
-
-    #[tokio::test]
-    async fn consent_rejects_key_delivery_without_a_signed_recipient() {
-        let Some((app, client_id, token)) = app_with_client_and_account().await else {
-            return;
-        };
-        let state = state_token(&app, &client_id, None);
-
-        let (status, body) = post_json(
-            &app,
-            "/oauth/consent",
-            Some(&token),
-            &json!({
-                "oauth_state": state,
-                "approved": true,
-                "keys_jwe": "some-jwe",
-                "keys_jwk_thumbprint": "whatever",
-            }),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            body["error_description"],
-            "authorization request did not include a key recipient"
-        );
-    }
-
-    #[tokio::test]
-    async fn consent_context_returns_fields_from_the_signed_state() {
-        let Some((app, client_id, token)) = app_with_client_and_account().await else {
-            return;
-        };
-        let state = state_token(&app, &client_id, Some(keys_jwk()));
-
-        let (status, body) = get_json(
-            &app,
-            &format!("/oauth/consent-context?oauth_state={state}"),
-            Some(&token),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["client_id"], client_id);
-        assert_eq!(body["client_name"], "Test Client");
-        assert_eq!(body["scope"], "openid sync");
-        assert_eq!(body["redirect_uri"], REDIRECT_URI);
-        assert_eq!(body["keys_jwk"]["kty"], "EC");
-    }
-
-    #[tokio::test]
-    async fn consent_context_rejects_invalid_state() {
-        let Some((app, _client_id, token)) = app_with_client_and_account().await else {
-            return;
-        };
-        let (status, _) = get_json(
-            &app,
-            "/oauth/consent-context?oauth_state=not-a-jwt",
-            Some(&token),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn consent_context_requires_authentication() {
-        let Some((app, client_id, _token)) = app_with_client_and_account().await else {
-            return;
-        };
-        let state = state_token(&app, &client_id, None);
-        let (status, _) = get_json(
-            &app,
-            &format!("/oauth/consent-context?oauth_state={state}"),
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-    }
-}
+#[path = "oauth_consent_tests.rs"]
+mod consent_tests;
 
 #[cfg(test)]
-mod refresh_tests {
-    use axum::http::StatusCode;
-
-    use crate::test_support::{post_form, test_app};
-
-    use super::*;
-
-    const REDIRECT_URI: &str = "http://localhost:5381/";
-
-    /// Seed client + account + grant + one active refresh token; return
-    /// (client_id, raw_refresh_token).
-    async fn seed_refresh_token(app: &crate::test_support::TestApp) -> (String, String) {
-        let client_id = Uuid::new_v4();
-        app.storage
-            .create_oauth_client(&OAuthClient {
-                id: client_id,
-                name: "refresh test client".to_owned(),
-                secret_hash: None,
-                redirect_uris: vec![REDIRECT_URI.to_owned()],
-                allowed_scopes: vec!["openid".to_owned()],
-                created_at: chrono::Utc::now(),
-            })
-            .await
-            .expect("create client");
-        let tail = &client_id.simple().to_string()[..12];
-        let account = app
-            .storage
-            .get_or_create_account(
-                crate::test_support::TEST_ISSUER,
-                &format!("user{tail}"),
-                &format!("user{tail}@example.test"),
-            )
-            .await
-            .expect("create account");
-        let grant = app
-            .storage
-            .get_or_create_oauth_grant(client_id, account.id, "openid")
-            .await
-            .expect("create grant");
-
-        let raw = generate_random_token();
-        let now = chrono::Utc::now();
-        app.storage
-            .create_refresh_token(&OAuthRefreshToken {
-                id: Uuid::new_v4(),
-                grant_id: grant.id,
-                token_hash: sha256_hash(raw.as_bytes()),
-                created_at: now,
-                expires_at: now + chrono::Duration::days(1),
-            })
-            .await
-            .expect("create refresh token");
-        (client_id.to_string(), raw)
-    }
-
-    fn refresh_form(client_id: &str, token: &str) -> String {
-        format!(
-            "grant_type=refresh_token&refresh_token={}&client_id={}",
-            token, client_id
-        )
-    }
-
-    #[tokio::test]
-    async fn sequential_reuse_of_rotated_token_revokes_surviving_family() {
-        let Some(app) = test_app().await else {
-            return;
-        };
-        let (client_id, raw1) = seed_refresh_token(&app).await;
-
-        // Legitimate rotation.
-        let (status, body) =
-            post_form(&app, "/oauth/token", None, &refresh_form(&client_id, &raw1)).await;
-        assert_eq!(status, StatusCode::OK, "body: {body}");
-        let raw2 = body["refresh_token"]
-            .as_str()
-            .expect("new token")
-            .to_owned();
-
-        // AUD-004 sequential reuse: the already-rotated token is presented
-        // again (a copied token used by its thief, or a stale tab). The
-        // surviving replacement must be revoked, not left active. 400 per
-        // RFC 6749; the description carries the reuse signal.
-        let (status, body) =
-            post_form(&app, "/oauth/token", None, &refresh_form(&client_id, &raw1)).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
-        assert_eq!(body["error"], "invalid_grant");
-        assert!(
-            body["error_description"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("reuse"),
-            "body: {body}"
-        );
-
-        // The replacement family is dead. A revoked token was deleted
-        // without being recorded as used, so it presents as a plain
-        // invalid_grant (400) rather than a reuse detection (401).
-        let (status, body) =
-            post_form(&app, "/oauth/token", None, &refresh_form(&client_id, &raw2)).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
-        assert_eq!(body["error"], "invalid_grant");
-    }
-
-    #[tokio::test]
-    async fn concurrent_presentation_of_one_token_kills_family() {
-        let Some(app) = test_app().await else {
-            return;
-        };
-        let (client_id, raw1) = seed_refresh_token(&app).await;
-
-        // Two in-flight refreshes presenting the same token: exactly one
-        // rotation can win; the loser's duplicate insert must revoke the
-        // family (including the winner's fresh replacement) instead of
-        // erroring with a broken transaction and leaving it alive.
-        let (r1, r2) = {
-            let form = refresh_form(&client_id, &raw1);
-            tokio::join!(
-                post_form(&app, "/oauth/token", None, &form),
-                post_form(&app, "/oauth/token", None, &form),
-            )
-        };
-        let ok_count = usize::from(r1.0 == StatusCode::OK) + usize::from(r2.0 == StatusCode::OK);
-        assert_eq!(ok_count, 1, "responses: {r1:?} {r2:?}");
-        let raw2 = if r1.0 == StatusCode::OK { r1.1 } else { r2.1 }["refresh_token"]
-            .as_str()
-            .expect("new token")
-            .to_owned();
-
-        // Family revoked: the winner's replacement no longer refreshes.
-        let (status, body) =
-            post_form(&app, "/oauth/token", None, &refresh_form(&client_id, &raw2)).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
-        assert_eq!(body["error"], "invalid_grant");
-    }
-
-    /// Seed a client + account + refreshable grant with an explicit grant
-    /// scope and client allowed-scopes (storage-level grant creation does
-    /// not re-validate policy, which is what these tests vary).
-    async fn seed_scoped_refresh(
-        app: &crate::test_support::TestApp,
-        allowed: &[&str],
-        grant_scope: &str,
-    ) -> (String, String, Uuid) {
-        let client_id = Uuid::new_v4();
-        app.storage
-            .create_oauth_client(&OAuthClient {
-                id: client_id,
-                name: "scope test client".to_owned(),
-                secret_hash: None,
-                redirect_uris: vec![REDIRECT_URI.to_owned()],
-                allowed_scopes: allowed.iter().map(|s| s.to_string()).collect(),
-                created_at: chrono::Utc::now(),
-            })
-            .await
-            .expect("create client");
-        let tail = &client_id.simple().to_string()[..12];
-        let account = app
-            .storage
-            .get_or_create_account(
-                crate::test_support::TEST_ISSUER,
-                &format!("user{tail}"),
-                &format!("user{tail}@example.test"),
-            )
-            .await
-            .expect("create account");
-        let grant = app
-            .storage
-            .get_or_create_oauth_grant(client_id, account.id, grant_scope)
-            .await
-            .expect("create grant");
-
-        let raw = generate_random_token();
-        let now = chrono::Utc::now();
-        app.storage
-            .create_refresh_token(&OAuthRefreshToken {
-                id: Uuid::new_v4(),
-                grant_id: grant.id,
-                token_hash: sha256_hash(raw.as_bytes()),
-                created_at: now,
-                expires_at: now + chrono::Duration::days(1),
-            })
-            .await
-            .expect("create refresh token");
-        (client_id.to_string(), raw, account.id)
-    }
-
-    #[tokio::test]
-    async fn refresh_grants_the_latest_authorized_scope_not_the_first() {
-        // AUD-013: a broad consent followed by a later narrow authorization
-        // must not let refresh resurrect the broad scope.
-        let Some(app) = test_app().await else {
-            return;
-        };
-        let (client_id, raw, account_id) =
-            seed_scoped_refresh(&app, &["openid", "sync"], "openid sync").await;
-
-        // A later, narrower authorization for the same account+client (the
-        // code-exchange path): the stored grant must track it.
-        let narrow = app
-            .storage
-            .get_or_create_oauth_grant(Uuid::parse_str(&client_id).unwrap(), account_id, "openid")
-            .await
-            .expect("narrow authorization");
-        assert_eq!(narrow.scope, "openid", "grant must track the latest scope");
-
-        let (status, body) =
-            post_form(&app, "/oauth/token", None, &refresh_form(&client_id, &raw)).await;
-        assert_eq!(status, StatusCode::OK, "body: {body}");
-        assert_eq!(
-            body["scope"], "openid",
-            "refresh must not regain the broad scope: {body}"
-        );
-    }
-
-    #[tokio::test]
-    async fn refresh_fails_when_the_client_lost_the_capability() {
-        // AUD-013: a capability withdrawn from the client after consent must
-        // stop flowing on refresh.
-        let Some(app) = test_app().await else {
-            return;
-        };
-        // Grant (storage-level) holds "openid sync", but the client's policy
-        // only permits "openid".
-        let (client_id, raw, _account_id) =
-            seed_scoped_refresh(&app, &["openid"], "openid sync").await;
-
-        let (status, body) =
-            post_form(&app, "/oauth/token", None, &refresh_form(&client_id, &raw)).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
-        assert_eq!(body["error"], "invalid_grant");
-        assert!(
-            body["error_description"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("no longer permitted"),
-            "body: {body}"
-        );
-    }
-}
+#[path = "oauth_refresh_tests.rs"]
+mod refresh_tests;
 
 #[cfg(test)]
-mod consent_bundle_tests {
-    use base64::engine::general_purpose::STANDARD as B64;
-    use serde_json::json;
+#[path = "oauth_consent_bundle_tests.rs"]
+mod consent_bundle_tests;
 
-    use crate::test_support::{get_json, post_json, test_app};
+#[cfg(test)]
+#[path = "oauth_validation_tests.rs"]
+mod validation_tests;
 
-    use super::*;
-
-    const REDIRECT_URI: &str = "http://localhost:5381/";
-
-    async fn seed() -> Option<(crate::test_support::TestApp, String, String)> {
-        let app = test_app().await?;
-        let client_id = Uuid::new_v4();
-        app.storage
-            .create_oauth_client(&OAuthClient {
-                id: client_id,
-                name: "bundle client".to_owned(),
-                secret_hash: None,
-                redirect_uris: vec![REDIRECT_URI.to_owned()],
-                allowed_scopes: vec!["openid".to_owned(), "sync".to_owned()],
-                created_at: chrono::Utc::now(),
-            })
-            .await
-            .expect("create client");
-        let account = app
-            .storage
-            .get_or_create_account(
-                crate::test_support::TEST_ISSUER,
-                "bundle",
-                "bundle@example.test",
-            )
-            .await
-            .expect("create account");
-        let token = app.auth_token(&account.id.to_string());
-        Some((app, client_id.to_string(), token))
-    }
-
-    fn consent_body(state: &str, wrapped: &[u8], blob: &str) -> serde_json::Value {
-        consent_body_with_root_version(state, wrapped, blob, 0)
-    }
-
-    fn consent_body_with_root_version(
-        state: &str,
-        wrapped: &[u8],
-        blob: &str,
-        root_key_version: i64,
-    ) -> serde_json::Value {
-        json!({
-            "oauth_state": state,
-            "approved": true,
-            "wrapped_scoped_key": B64.encode(wrapped),
-            "app_keypair_blob": blob,
-            "root_key_version": root_key_version,
-            // Real P-256 point (validate_p256_public_key checks on-curve).
-            "app_public_key_jwk": json!({
-                "kty": "EC",
-                "crv": "P-256",
-                "x": "-fdJbZAPB-1JvgW0Z-yAicImzBmEkhx396ojqztJHFw",
-                "y": "DZagJ-DypVyEsBj3y3CdosboodfJAP9u9Z4hItYM4NM",
-            }).to_string(),
-        })
-    }
-
-    fn state_for(app: &crate::test_support::TestApp, client_id: &str) -> String {
-        app.jwt
-            .create_oauth_state_token(OAuthStateClaims::new(
-                client_id.to_owned(),
-                REDIRECT_URI.to_owned(),
-                "openid".to_owned(),
-                "client-state".to_owned(),
-                "challenge".to_owned(),
-                "S256".to_owned(),
-                None,
-            ))
-            .expect("state token")
-    }
-
-    #[tokio::test]
-    async fn consent_bundle_installs_atomically_on_empty_grant() {
-        let Some((app, client_id, token)) = seed().await else {
-            return;
-        };
-        let state = state_for(&app, &client_id);
-        let wrapped = vec![7u8; WRAPPED_SCOPED_KEY_SIZE];
-        let (status, body) = post_json(
-            &app,
-            "/oauth/consent",
-            Some(&token),
-            &consent_body(&state, &wrapped, "blob-v1"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "body: {body}");
-
-        // The bundle landed together.
-        let (status, body) = get_json(
-            &app,
-            &format!("/oauth/grant-keypair?client_id={client_id}"),
-            Some(&token),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["app_keypair_blob"], "blob-v1");
-        assert_eq!(body["wrapped_scoped_key"], B64.encode(&wrapped));
-    }
-
-    #[tokio::test]
-    async fn consent_bundle_rejects_material_derived_under_rotated_root() {
-        let Some((app, client_id, token)) = seed().await else {
-            return;
-        };
-        let state = state_for(&app, &client_id);
-        let wrapped = vec![7u8; WRAPPED_SCOPED_KEY_SIZE];
-
-        // AUD-008/009 residual: the account's root key rotated (bump the
-        // committed version) after this client derived its key material.
-        // Installing the bundle would strand the grant under a root
-        // nobody holds anymore.
-        // The interleaving under test only needs the committed version to
-        // have moved; bump it directly (a full API rotation needs valid
-        // wrapped material unrelated to this check).
-        sqlx::query("UPDATE accounts SET root_key_version = 1 WHERE email = 'bundle@example.test'")
-            .execute(app.storage.pool())
-            .await
-            .expect("bump root version");
-
-        let (status, body) = post_json(
-            &app,
-            "/oauth/consent",
-            Some(&token),
-            &consent_body_with_root_version(&state, &wrapped, "blob-stale", 0),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT, "body: {body}");
-        assert!(body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("invalid_grant_state"));
-
-        // Nothing was written for this grant.
-        let (status, body) = get_json(
-            &app,
-            &format!("/oauth/grant-keypair?client_id={client_id}"),
-            Some(&token),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["app_keypair_blob"], "");
-
-        // A client that re-derived under the CURRENT root succeeds.
-        let state = state_for(&app, &client_id);
-        let (status, body) = post_json(
-            &app,
-            "/oauth/consent",
-            Some(&token),
-            &consent_body_with_root_version(&state, &wrapped, "blob-fresh", 1),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "body: {body}");
-        assert_eq!(body_text(&body), "");
-    }
-
-    fn body_text(body: &serde_json::Value) -> String {
-        body.as_str().unwrap_or("").to_string()
-    }
-
-    #[tokio::test]
-    async fn consent_bundle_rejects_stale_read_overwriting_keypair() {
-        let Some((app, client_id, token)) = seed().await else {
-            return;
-        };
-        // First consent installs W1 + keypair-v1.
-        let state = state_for(&app, &client_id);
-        let w1 = vec![1u8; WRAPPED_SCOPED_KEY_SIZE];
-        let (status, body) = post_json(
-            &app,
-            "/oauth/consent",
-            Some(&token),
-            &consent_body(&state, &w1, "keypair-v1"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "body: {body}");
-
-        // AUD-008: a client whose grant read failed generates a fresh
-        // scoped key and submits W2 + keypair-v2. The server must reject:
-        // overwriting the keypair under a different wrapper strands the
-        // existing key material.
-        let state2 = state_for(&app, &client_id);
-        let w2 = vec![2u8; WRAPPED_SCOPED_KEY_SIZE];
-        let (status, body) = post_json(
-            &app,
-            "/oauth/consent",
-            Some(&token),
-            &consent_body(&state2, &w2, "keypair-v2"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT, "body: {body}");
-        assert_eq!(body["error"], "invalid_grant_state");
-
-        // Stored state unchanged: W1 + keypair-v1 intact.
-        let (status, body) = get_json(
-            &app,
-            &format!("/oauth/grant-keypair?client_id={client_id}"),
-            Some(&token),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["app_keypair_blob"], "keypair-v1");
-        assert_eq!(body["wrapped_scoped_key"], B64.encode(&w1));
-
-        // A consistent resubmission (same wrapper) replaces the keypair.
-        let state3 = state_for(&app, &client_id);
-        let (status, body) = post_json(
-            &app,
-            "/oauth/consent",
-            Some(&token),
-            &consent_body(&state3, &w1, "keypair-v1b"),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "body: {body}");
-        let (_, body) = get_json(
-            &app,
-            &format!("/oauth/grant-keypair?client_id={client_id}"),
-            Some(&token),
-        )
-        .await;
-        assert_eq!(body["app_keypair_blob"], "keypair-v1b");
-        assert_eq!(body["wrapped_scoped_key"], B64.encode(&w1));
-    }
-
-    #[tokio::test]
-    async fn consent_keypair_without_wrapped_key_is_rejected() {
-        let Some((app, client_id, token)) = seed().await else {
-            return;
-        };
-        let state = state_for(&app, &client_id);
-        let mut body = consent_body(&state, &[0u8; WRAPPED_SCOPED_KEY_SIZE], "blob");
-        body.as_object_mut().unwrap().remove("wrapped_scoped_key");
-        let (status, body) = post_json(&app, "/oauth/consent", Some(&token), &body).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
-        assert!(
-            body["error_description"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("atomically"),
-            "body: {body}"
-        );
-    }
-}
+#[cfg(test)]
+#[path = "oauth_property_tests.rs"]
+mod property_tests;

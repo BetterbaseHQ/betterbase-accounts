@@ -101,3 +101,7 @@ impl LoginStateStorage for PostgresStorage {
         Ok(row.into())
     }
 }
+
+#[cfg(test)]
+#[path = "login_tests.rs"]
+mod tests;

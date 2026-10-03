@@ -96,6 +96,12 @@ The storage layer is trait-based with 16+ async traits organized by domain. The 
 
 `LISTEN_ADDR` (default `0.0.0.0:5377`), `LOG_FORMAT` (`text`/`json`), `WEB_BASE_URL`, `SYNC_ENDPOINT`, `FEDERATION_WS_ENDPOINT`, `CAP_KEY_ID` + `CAP_SECRET` + `CAP_VERIFY_URL` (enables proof-of-work), `SMTP_DEV_MODE` (logs emails instead of sending), `SMTP_HOST`/`SMTP_PORT`/`SMTP_USERNAME`/`SMTP_PASSWORD`/`SMTP_FROM`.
 
+Configuration is validated before database initialization. Invalid OPAQUE setup or
+identity-hash keys, malformed listen addresses, invalid SMTP ports, and enabled CAP
+without a key ID, secret, or HTTP(S) verification URL fail startup. `OAUTH_ISSUER`
+must be an HTTP(S) URL without userinfo, query, or fragment; an issuer with a path
+requires an explicit bare `ACCOUNTS_PUBLIC_URL` for discovery.
+
 ## Deployment compatibility
 
 Temporary authentication state tokens are bound to their registration, login,
@@ -120,10 +126,107 @@ just check          # Format + lint + test + check web (run before committing)
 just test           # Run tests (DB tests skip without DATABASE_URL)
 just test-db        # Spin up Postgres, run all tests including DB, tear down
 just build-web      # Build React UI into crates/api/assets/
-just check-web      # Lint and typecheck web UI
+just check-web      # Format, typecheck, test, and enforce web coverage
 ```
 
 `just test-db` starts a PostgreSQL container on port 15433, runs all tests, then removes the container.
+
+### Property tests
+
+JWT, OPAQUE, and OAuth key-validation property tests run in the normal Rust suite
+and CI. They generate inputs, check successful authentication before tampering,
+and exercise malformed messages and key material. Each property runs 256 cases
+by default; no database or external E2E suite is needed for this subset.
+
+```bash
+just test-properties
+PROPTEST_CASES=1024 just test-properties # A longer local run
+PROPTEST_RNG_SEED=42 just test-properties # Reproduce a generation sequence
+```
+
+Proptest shrinks failures and saves regression seeds under each crate's
+`proptest-regressions/` directory. Commit these files when fixing a discovered
+failure so normal runs continue to replay the minimized case. Seeds reproduce
+generated inputs; cryptographic key generation and protocol nonces still use
+OS randomness. Property tests complement the example-based tests and coverage
+floors; passing generated cases does not prove that every input is safe.
+
+### Security mutations
+
+The Rust CI job also runs ten reviewed security mutations: it disables ownership,
+credential/root-version, and PKCE guards, and replaces consuming reads with ordinary
+reads to test replay protection. The runner copies the current Rust sources and
+embedded UI assets into a temporary directory, checks the unmodified API baseline
+against PostgreSQL, then builds each mutation and runs its exact regression test.
+It never edits the working source. Compilation errors, missing tests, infrastructure
+failures, timeouts, and surviving mutations fail the gate.
+
+```bash
+just test-mutations-db # Disposable PostgreSQL, retained on failure
+# With DATABASE_URL pointing to a test database:
+just test-mutations
+just test-mutations --only login-proof-replay # Investigate one mutation
+```
+
+On a fresh checkout, run `just build-web` first to populate embedded assets.
+Reports and build/test logs are in `target/security-mutations/reports/`; CI uploads
+them as `rust-security-mutations`. Mutation anchors and exact test names live in
+`scripts/test-security-mutations.py`; review them when refactoring a guard. This
+focused gate covers only those ten reviewed changes.
+
+### Coverage
+
+Coverage runs locally and in both CI jobs. CI enforces checked-in minimums,
+adds totals to the job summary, and retains HTML, LCOV, and JSON reports as
+`rust-coverage` and `web-coverage` artifacts for 30 days. No external coverage
+service or token is required.
+
+```bash
+just coverage-setup # Once: install cargo-llvm-cov 0.9.1 and llvm-tools-preview
+just build-web      # On a fresh checkout: install web dependencies and build embedded assets
+just coverage-db    # Both suites with disposable PostgreSQL; enforce coverage floors
+just coverage-web   # Web only
+# With DATABASE_URL pointing to a test database:
+just coverage-rust  # Rust only; fails if DATABASE_URL is missing or unreachable
+```
+
+Open `target/coverage/rust/html/index.html` and `web/coverage/index.html` for
+per-file coverage. Machine-readable totals are in
+`target/coverage/rust/summary.json` and `web/coverage/coverage-summary.json`;
+LCOV reports are `lcov.info` in those directories. Generated reports are ignored
+by Git and formatting checks. Rust coverage explicitly cleans workspace binaries
+and execution profiles before each run, so deleted code and earlier runs cannot
+affect the results. Instrumented third-party dependencies remain cached.
+The disposable database is removed on success and kept on failure for debugging
+(`just db-down` removes it).
+
+| Suite | Lines | Branches | Functions | Statements / regions |
+| --- | ---: | ---: | ---: | ---: |
+| Web minimum | 84% | 71% | 78% | 82% statements |
+| Rust minimum | 88% | Not measured | 77% | 86% regions |
+
+Web coverage includes all `src` files, including untouched components; only the
+TypeScript declaration file is excluded. The recovery form and auth context each
+require 100% lines, branches, functions, and statements. Thresholds live in
+`web/vite.config.ts`; `pnpm test:coverage` and `just check-web` enforce them.
+
+Rust uses stable LLVM instrumentation across the workspace, with PostgreSQL
+required so storage and API tests cannot silently skip. Reports exclude dedicated
+test files and test-support files. Rust tests live in dedicated `*_tests.rs` files,
+so totals measure production code only, including the binaries. The coverage gate
+checks that no inline test modules return and no test files enter the report.
+Stable Rust does not measure branch coverage here. The Rust thresholds live in
+`scripts/coverage-rust.sh`.
+
+The production-only baseline is 88.67% lines, 77.53% functions, and 86.89% regions.
+These totals replace the old 92.62% line figure, which included inline test bodies:
+the measured line count changed from 7,898 to 3,876. The new floors reflect this
+measurement change; all production files remain included.
+
+These floors prevent drops below the recorded baseline, not every small decrease.
+Review the per-file reports and raise the floors as tests improve; do not lower
+thresholds or exclude production files simply to make a check pass. External E2E
+coverage is separate and is not merged into these reports.
 
 ### Docker
 

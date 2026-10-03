@@ -40,6 +40,23 @@ impl From<OAuthGrantRow> for OAuthGrant {
     }
 }
 
+// Every root-dependent write locks the account before any grant rows, matching
+// rotation's lock order. Keep the version check and write in one transaction.
+async fn lock_grant_root(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    grant_id: Uuid,
+) -> Result<i64, StorageError> {
+    sqlx::query_scalar!(
+        "SELECT root_key_version FROM accounts WHERE id = (SELECT account_id FROM oauth_grants WHERE id = $1) FOR UPDATE",
+        grant_id
+    )
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(StorageError::from)?
+    .map(i64::from)
+    .ok_or(StorageError::OAuthGrantNotFound)
+}
+
 #[async_trait]
 impl OAuthGrantStorage for PostgresStorage {
     async fn get_or_create_oauth_grant(
@@ -98,6 +115,17 @@ impl OAuthGrantStorage for PostgresStorage {
         scope: &str,
         thumbprint: &str,
     ) -> Result<OAuthGrant, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+        let locked = sqlx::query_scalar!(
+            "SELECT id FROM accounts WHERE id = $1 FOR UPDATE",
+            account_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StorageError::from)?;
+        if locked.is_none() {
+            return Err(StorageError::AccountNotFound);
+        }
         let row = sqlx::query_as!(
             OAuthGrantRow,
             r#"
@@ -117,10 +145,11 @@ impl OAuthGrantStorage for PostgresStorage {
             scope,
             thumbprint,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(StorageError::from)?;
 
+        tx.commit().await.map_err(StorageError::from)?;
         Ok(row.into())
     }
 
@@ -286,6 +315,10 @@ impl OAuthGrantStorage for PostgresStorage {
         expected_root_version: i64,
     ) -> Result<crate::ConsentKeyInstall, StorageError> {
         let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+        let current_root_version = lock_grant_root(&mut tx, grant_id).await?;
+        if current_root_version != expected_root_version {
+            return Ok(crate::ConsentKeyInstall::StaleRoot);
+        }
         let stored = sqlx::query_scalar!(
             "SELECT wrapped_scoped_key FROM oauth_grants WHERE id = $1 FOR UPDATE",
             grant_id
@@ -294,26 +327,6 @@ impl OAuthGrantStorage for PostgresStorage {
         .await
         .map_err(StorageError::from)?
         .ok_or(StorageError::OAuthGrantNotFound)?;
-
-        // AUD-008/009 residual: the account's committed root version is
-        // read AFTER the grant row lock (rotation locks the account row
-        // first, then grants — this ordering cannot deadlock, and a
-        // rotation that committed before this point is visible here).
-        // A client that derived under an older root would strand this
-        // grant under a key nobody can unwrap anymore.
-        let current_root_version = sqlx::query_scalar!(
-            "SELECT root_key_version FROM accounts WHERE id =              (SELECT account_id FROM oauth_grants WHERE id = $1)",
-            grant_id
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(StorageError::from)?;
-        if current_root_version != expected_root_version as i32 {
-            // Roll back the grant lock and report the stale root; no key
-            // material is written.
-            tx.rollback().await.map_err(StorageError::from)?;
-            return Ok(crate::ConsentKeyInstall::StaleRoot);
-        }
 
         let outcome = match stored.as_deref() {
             // An empty stored wrapper is an absent one (legacy rows /
@@ -388,16 +401,28 @@ impl OAuthGrantStorage for PostgresStorage {
         expected_root_version: i64,
     ) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
-        let current = sqlx::query_scalar!(
-            "SELECT root_key_version FROM accounts WHERE id =              (SELECT account_id FROM oauth_grants WHERE id = $1)",
-            grant_id
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(StorageError::from)?;
-        if current != expected_root_version as i32 {
+        let current = lock_grant_root(&mut tx, grant_id).await?;
+        if current != expected_root_version {
             tx.rollback().await.map_err(StorageError::from)?;
             return Err(StorageError::RootKeyVersionConflict);
+        }
+        // The caller's empty-grant snapshot may predate another consent. Check
+        // the stored wrapper under the same locks as the write to preserve any
+        // installed bundle and the key used to encrypt it.
+        let stored = sqlx::query_scalar!(
+            "SELECT wrapped_scoped_key FROM oauth_grants WHERE id = $1 FOR UPDATE",
+            grant_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StorageError::from)?
+        .ok_or(StorageError::OAuthGrantNotFound)?;
+        if let Some(stored) = stored.filter(|key| !key.is_empty()) {
+            if stored != wrapped_scoped_key {
+                return Err(StorageError::GrantKeyConflict);
+            }
+            tx.commit().await.map_err(StorageError::from)?;
+            return Ok(());
         }
         sqlx::query!(
             "UPDATE oauth_grants SET wrapped_scoped_key = $2 WHERE id = $1",
@@ -430,8 +455,17 @@ impl OAuthGrantStorage for PostgresStorage {
     async fn update_grant_mailbox_id(
         &self,
         grant_id: Uuid,
+        account_id: Uuid,
+        client_id: Uuid,
         mailbox_id: &str,
     ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+        // Lock and check ownership together, so deletion cannot race a checked write.
+        sqlx::query_scalar!(
+            "SELECT id FROM oauth_grants WHERE id = $1 AND account_id = $2 AND client_id = $3 FOR UPDATE",
+            grant_id, account_id, client_id
+        ).fetch_optional(&mut *tx).await.map_err(StorageError::from)?
+            .ok_or(StorageError::OAuthGrantNotFound)?;
         // First-write-wins: only update if mailbox_id is not yet set
         sqlx::query!(
             r#"
@@ -442,17 +476,18 @@ impl OAuthGrantStorage for PostgresStorage {
             grant_id,
             mailbox_id,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| {
-            // Unique constraint violation = another request already set it
+            // The same mailbox cannot belong to two grants.
             if let sqlx::Error::Database(ref db) = e {
                 if db.constraint() == Some("idx_oauth_grants_mailbox_id") {
-                    return StorageError::Internal("mailbox_id conflict".to_string());
+                    return StorageError::MailboxConflict;
                 }
             }
             StorageError::from(e)
         })?;
+        tx.commit().await.map_err(StorageError::from)?;
         Ok(())
     }
 
@@ -481,13 +516,33 @@ impl OAuthGrantStorage for PostgresStorage {
 
     async fn batch_update_grant_wrapped_keys(
         &self,
+        account_id: Uuid,
+        expected_root_version: i64,
         updates: &[GrantKeyUpdate],
     ) -> Result<(), StorageError> {
-        if updates.is_empty() {
-            return Ok(());
-        }
         let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+        let version = sqlx::query_scalar!(
+            "SELECT root_key_version FROM accounts WHERE id = $1 FOR UPDATE",
+            account_id
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(StorageError::from)?
+        .ok_or(StorageError::AccountNotFound)?;
+        if i64::from(version) != expected_root_version {
+            return Err(StorageError::RootKeyVersionConflict);
+        }
         for update in updates {
+            let owner = sqlx::query_scalar!(
+                "SELECT account_id FROM oauth_grants WHERE id = $1",
+                update.grant_id
+            )
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(StorageError::from)?;
+            if owner != Some(account_id) {
+                return Err(StorageError::OAuthGrantNotFound);
+            }
             sqlx::query!(
                 "UPDATE oauth_grants SET wrapped_scoped_key = $2 WHERE id = $1",
                 update.grant_id,

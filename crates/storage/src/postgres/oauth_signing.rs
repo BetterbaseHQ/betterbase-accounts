@@ -30,6 +30,13 @@ impl OAuthSigningKeyStorage for PostgresStorage {
         private_key: &[u8],
         public_key: &[u8],
     ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+        // The table may be empty, so no row exists to lock. Serialize startup
+        // before checking for an existing key, using a fresh READ COMMITTED snapshot.
+        sqlx::query("LOCK TABLE oauth_signing_keys IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(StorageError::from)?;
         sqlx::query!(
             r#"
             INSERT INTO oauth_signing_keys (private_key, public_key)
@@ -39,9 +46,10 @@ impl OAuthSigningKeyStorage for PostgresStorage {
             private_key,
             public_key,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(StorageError::from)?;
+        tx.commit().await.map_err(StorageError::from)?;
         Ok(())
     }
 

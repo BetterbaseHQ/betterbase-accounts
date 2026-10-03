@@ -20,7 +20,12 @@ async fn main() -> Result<()> {
 
     match args[1].as_str() {
         "create" => create_client(&args[2..]).await,
-        "list" => list_clients().await,
+        "list" => {
+            if args.len() != 2 {
+                bail!("list takes no arguments");
+            }
+            list_clients().await
+        }
         "help" | "--help" | "-h" => {
             print_usage();
             Ok(())
@@ -51,7 +56,7 @@ Environment Variables:
 Create Options:
   --name          Client display name (required)
   --redirect-uri  Allowed redirect URI (repeatable)
-  --scope         Allowed capability scope: 'sync', 'files', 'inference' (repeatable)
+  --scope         Allowed capability scope: 'sync', 'files', 'inference', 'keys' (repeatable)
 
 Examples:
   oauth-client create --name "Notes App" --redirect-uri "http://localhost:5381/callback" --scope sync
@@ -67,6 +72,13 @@ async fn connect() -> Result<PostgresStorage> {
         .context("failed to connect to database")
 }
 
+fn argument_value<'a>(args: &'a [String], index: usize, flag: &str) -> Result<&'a str> {
+    args.get(index)
+        .map(String::as_str)
+        .filter(|value| !value.starts_with("--"))
+        .with_context(|| format!("{flag} requires a value"))
+}
+
 async fn create_client(args: &[String]) -> Result<()> {
     let mut name = String::new();
     let mut redirect_uris: Vec<String> = Vec::new();
@@ -77,22 +89,39 @@ async fn create_client(args: &[String]) -> Result<()> {
         match args[i].as_str() {
             "--name" => {
                 i += 1;
-                name = args.get(i).context("--name requires a value")?.clone();
+                name = argument_value(args, i, "--name")?.to_owned();
             }
             "--redirect-uri" => {
                 i += 1;
-                let uri = args.get(i).context("--redirect-uri requires a value")?;
-                if !uri.starts_with("http://") && !uri.starts_with("https://") {
-                    bail!("redirect URI must start with http:// or https://: {uri}");
+                let uri = argument_value(args, i, "--redirect-uri")?;
+                // URL parsers repair forms such as https:host/path. Stored
+                // callbacks must have an explicit authority so the browser
+                // cannot resolve them relative to the consent page.
+                let has_authority = uri.split_once("://").is_some_and(|(scheme, rest)| {
+                    (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
+                        && !rest.is_empty()
+                        && !rest.starts_with(['/', '\\', '?', '#'])
+                });
+                let parsed = url::Url::parse(uri).context("invalid redirect URI")?;
+                if !has_authority
+                    || !matches!(parsed.scheme(), "http" | "https")
+                    || parsed.host_str().is_none()
+                    || !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                    || parsed.fragment().is_some()
+                    || uri.contains('\\')
+                    || uri.chars().any(|c| c.is_whitespace() || c.is_control())
+                {
+                    bail!("redirect URI must have an explicit http:// or https:// authority, without userinfo, whitespace, backslashes, or fragment");
                 }
-                redirect_uris.push(uri.clone());
+                redirect_uris.push(uri.to_owned());
             }
             "--scope" => {
                 i += 1;
-                let scope = args.get(i).context("--scope requires a value")?;
-                match scope.as_str() {
+                let scope = argument_value(args, i, "--scope")?;
+                match scope {
                     "sync" | "files" | "inference" | "keys" => {
-                        allowed_scopes.push(scope.clone());
+                        allowed_scopes.push(scope.to_owned());
                     }
                     _ => bail!("invalid scope: {scope}"),
                 }
@@ -102,7 +131,7 @@ async fn create_client(args: &[String]) -> Result<()> {
         i += 1;
     }
 
-    if name.is_empty() {
+    if name.trim().is_empty() {
         bail!("--name is required");
     }
     if redirect_uris.is_empty() {

@@ -183,9 +183,9 @@ export function AuthForm({
       }
     }
 
-    const passwordResult = validatePassword(password);
-    if (!passwordResult.valid) {
-      // Button should be disabled, but validate anyway for safety
+    // Strength policy applies when choosing a password. Existing passwords
+    // must reach the server even if the policy has changed since signup.
+    if (isSignup ? !validatePassword(password).valid : !password) {
       hasErrors = true;
     }
 

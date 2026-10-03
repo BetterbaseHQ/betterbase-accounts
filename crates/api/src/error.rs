@@ -95,6 +95,8 @@ impl From<StorageError> for ApiError {
             StorageError::OAuthCodeNotFound | StorageError::OAuthCodeExpired => {
                 ApiError::bad_request("invalid or expired code")
             }
+            StorageError::MailboxConflict => ApiError::conflict("mailbox_id conflict"),
+            StorageError::GrantKeyConflict => ApiError::conflict("grant key material changed"),
             StorageError::OAuthGrantNotFound => ApiError::not_found("grant not found"),
             StorageError::InvalidRedirectURI => ApiError::bad_request("invalid redirect URI"),
             StorageError::RefreshTokenNotFound | StorageError::RefreshTokenExpired => {

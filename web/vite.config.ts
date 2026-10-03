@@ -19,6 +19,22 @@ export default defineConfig({
     },
   },
   test: {
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "html", "lcov", "json-summary"],
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/vite-env.d.ts"],
+      // Raise these floors as coverage improves; CI must never lower them automatically.
+      thresholds: {
+        lines: 84,
+        statements: 82,
+        functions: 78,
+        branches: 71,
+        "src/components/recovery/recovery-form.tsx": { 100: true },
+        "src/contexts/auth-context.tsx": { 100: true },
+      },
+    },
+    setupFiles: ["test/setup.ts"],
     globals: true,
     environment: "node",
     include: ["test/**/*.test.ts", "test/**/*.test.tsx"],

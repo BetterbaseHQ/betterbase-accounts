@@ -17,6 +17,11 @@ pub(super) use crate::{
 /// `BB_TEST_REQUIRE_DB=1`, which makes a missing or unreachable database fail
 /// the run instead of silently skipping every storage test.
 pub(super) async fn test_storage() -> Option<PostgresStorage> {
+    test_storage_at(i64::MAX).await
+}
+
+/// Apply a historical prefix through SQLx itself, including migration checksums.
+pub(super) async fn test_storage_at(version: i64) -> Option<PostgresStorage> {
     let database_url = match std::env::var("DATABASE_URL") {
         Ok(value) => value,
         Err(_) => {
@@ -42,7 +47,14 @@ pub(super) async fn test_storage() -> Option<PostgresStorage> {
         .await
         .expect("create test schema");
 
-    sqlx::migrate!().run(&pool).await.expect("apply migrations");
+    let mut migrator = sqlx::migrate!();
+    migrator.migrations = migrator
+        .iter()
+        .filter(|migration| migration.version <= version)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
+    migrator.run(&pool).await.expect("apply migrations");
     Some(PostgresStorage::new(pool))
 }
 

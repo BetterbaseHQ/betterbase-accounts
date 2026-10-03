@@ -1,7 +1,5 @@
 #![forbid(unsafe_code)]
 //! CAP proof-of-work token verification.
-//!
-//! Mirrors Go server `server/cap.go`.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -110,3 +108,7 @@ impl CapService {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;

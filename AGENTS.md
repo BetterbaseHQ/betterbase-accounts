@@ -122,7 +122,7 @@ All routes are immutable v1 contracts -- paths must not change without a version
 - All crates enforce `#![forbid(unsafe_code)]`
 - Error handling: `thiserror` for domain errors (`StorageError`), `anyhow` for startup/infallible paths
 - Async traits use `async-trait` crate
-- Tests: `#[cfg(test)] mod tests` inline; storage tests use `postgres::test_support::test_storage()` (per-test throwaway schema + migrations) and skip without `DATABASE_URL`, except when `BB_TEST_REQUIRE_DB=1` (set by `just test-db` and CI), where a missing/unreachable DB fails the run. CI provisions PostgreSQL with `DATABASE_URL` set, so storage tests always run there.
+- Tests: `#[cfg(test)]` modules in dedicated `*_tests.rs` files (use `#[path = "..."] mod tests;` when needed); keep helpers in `*test_support.rs` files so production-only coverage excludes them. Inline test modules fail the coverage gate. Storage tests use `postgres::test_support::test_storage()` (per-test throwaway schema + migrations) and skip without `DATABASE_URL`, except when `BB_TEST_REQUIRE_DB=1` (set by `just test-db` and CI), where a missing/unreachable DB fails the run. CI provisions PostgreSQL with `DATABASE_URL` set, so storage tests always run there.
 - Workspace edition: 2021, MSRV: 1.88
 
 ## Docker

@@ -10,7 +10,7 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use betterbase_accounts_auth::{es256::generate_keypair, jwt::JwtService, opaque::OpaqueService};
 use betterbase_accounts_cap::{CapConfig, CapService};
-use betterbase_accounts_email::DevMailer;
+use betterbase_accounts_email::{DevMailer, Mailer};
 use betterbase_accounts_storage::postgres::PostgresStorage;
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
@@ -18,6 +18,14 @@ use tower::ServiceExt;
 use crate::state::{ApiConfig, AppState};
 
 pub(crate) const TEST_ISSUER: &str = "https://accounts.example.test";
+
+/// Structurally valid v2 recovery envelope; contents are opaque to the server.
+pub(crate) fn recovery_blob(byte: u8) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
+    serde_json::json!({"version": 2, "alg": "A256GCM",
+        "iv": B64URL.encode([byte; 12]), "ciphertext": B64URL.encode([byte; 48])})
+    .to_string()
+}
 
 pub(crate) struct TestApp {
     pub router: Router,
@@ -36,6 +44,23 @@ impl TestApp {
 }
 
 pub(crate) async fn test_app() -> Option<TestApp> {
+    test_app_with_mailer(Arc::new(DevMailer)).await
+}
+
+pub(crate) async fn test_app_with_mailer(mailer: Arc<dyn Mailer + Send + Sync>) -> Option<TestApp> {
+    test_app_custom(mailer, |_| {}).await
+}
+
+pub(crate) async fn test_app_with_config(
+    configure: impl FnOnce(&mut ApiConfig),
+) -> Option<TestApp> {
+    test_app_custom(Arc::new(DevMailer), configure).await
+}
+
+async fn test_app_custom(
+    mailer: Arc<dyn Mailer + Send + Sync>,
+    configure: impl FnOnce(&mut ApiConfig),
+) -> Option<TestApp> {
     let database_url = match std::env::var("DATABASE_URL") {
         Ok(value) => value,
         Err(_) => {
@@ -88,7 +113,7 @@ pub(crate) async fn test_app() -> Option<TestApp> {
     }));
 
     let identity_domain = "accounts.example.test".to_owned();
-    let config = Arc::new(ApiConfig {
+    let mut config = ApiConfig {
         issuer: TEST_ISSUER.to_owned(),
         identity_domain,
         accounts_public_url: TEST_ISSUER.to_owned(),
@@ -97,14 +122,16 @@ pub(crate) async fn test_app() -> Option<TestApp> {
         web_base_url: "https://accounts.example.test".to_owned(),
         cap_enabled: false,
         cap_key_id: String::new(),
-    });
+    };
+    configure(&mut config);
+    let config = Arc::new(config);
 
     let state = AppState {
         storage: storage.clone(),
         jwt: jwt.clone(),
         opaque: opaque.clone(),
         cap,
-        mailer: Arc::new(DevMailer),
+        mailer,
         config,
         identity_hash_key: vec![0x11; 32],
     };

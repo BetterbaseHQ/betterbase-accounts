@@ -37,6 +37,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 sqlx.workspace = true
 tower.workspace = true
 betterbase-accounts-auth = { path = "../auth", features = ["test-support"] }

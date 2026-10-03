@@ -51,6 +51,13 @@ impl JwtKeyStorage for PostgresStorage {
     }
 
     async fn ensure_jwt_key(&self, secret_key: &[u8]) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(StorageError::from)?;
+        // The table may be empty, so no row exists to lock. Serialize startup
+        // before checking for an existing key, using a fresh READ COMMITTED snapshot.
+        sqlx::query("LOCK TABLE jwt_keys IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(StorageError::from)?;
         // Only insert if no key exists (no-op if one already exists)
         sqlx::query!(
             r#"
@@ -60,9 +67,10 @@ impl JwtKeyStorage for PostgresStorage {
             "#,
             secret_key,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(StorageError::from)?;
+        tx.commit().await.map_err(StorageError::from)?;
         Ok(())
     }
 }
